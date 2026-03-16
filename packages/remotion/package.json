@@ -4,7 +4,15 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@ltx/shared": "*"
+    "@ltx/shared": "*",
+    "@remotion/bundler": "^4.0.435",
+    "@remotion/cli": "^4.0.435",
+    "@remotion/renderer": "^4.0.435",
+    "@types/react": "^19.2.14",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "remotion": "^4.0.435",
+    "zod": "^4.3.6"
   },
   "scripts": {
     "build": "tsc",
