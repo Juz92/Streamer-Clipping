@@ -1,0 +1,16 @@
+{
+  "name": "ltx-automation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx packages/shared/src/db/migrate.ts",
+    "studio": "npm run studio --workspace=packages/remotion"
+  },
+  "devDependencies": {}
+}

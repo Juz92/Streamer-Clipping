@@ -1,0 +1,13 @@
+{
+  "name": "@ltx/remotion",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ltx/shared": "*"
+  },
+  "scripts": {
+    "build": "tsc",
+    "studio": "remotion studio"
+  }
+}
