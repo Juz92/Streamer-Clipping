@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Audio, Sequence, Video } from "remotion";
+import { AbsoluteFill, Audio, Sequence, Video, staticFile } from "remotion";
 import type { LongFormNewsProps, ShotInput } from "./schema";
 import { TitleCard } from "./scenes/TitleCard";
 import { Screenshot } from "./scenes/Screenshot";
@@ -14,7 +14,7 @@ function renderShot(shot: ShotInput) {
       if (!shot.src) return null;
       return (
         <Screenshot
-          src={shot.src}
+          src={staticFile(shot.src)}
           caption={shot.caption}
           kenBurns={shot.kenBurns}
         />
@@ -26,7 +26,7 @@ function renderShot(shot: ShotInput) {
       return (
         <AbsoluteFill style={{ backgroundColor: theme.colors.bg }}>
           <Video
-            src={shot.src}
+            src={staticFile(shot.src)}
             style={{ width: "100%", height: "100%", objectFit: "contain" }}
           />
         </AbsoluteFill>
@@ -61,7 +61,7 @@ export const LongFormNews: React.FC<LongFormNewsProps> = ({
   return (
     <AbsoluteFill style={{ backgroundColor: theme.colors.bg }}>
       {audioSrc && (
-        <Audio src={audioSrc} />
+        <Audio src={staticFile(audioSrc)} />
       )}
 
       <Sequence from={titleStart} durationInFrames={titleDurationFrames}>

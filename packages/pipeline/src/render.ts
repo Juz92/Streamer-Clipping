@@ -74,12 +74,25 @@ async function main() {
     }
   }
 
+  // Public dir for Remotion staticFile() resolution
+  const jobAssetBase = join(DATA_DIR, `assets/job-${jobId}`);
+
+  // Convert absolute asset path to relative (for staticFile())
+  function toRelativeSrc(filePath: string): string {
+    const absBase = resolve(jobAssetBase);
+    const absFile = resolve(filePath);
+    if (absFile.startsWith(absBase)) {
+      return absFile.slice(absBase.length + 1).replace(/\\/g, "/");
+    }
+    return absFile.replace(/\\/g, "/");
+  }
+
   // Map shots to Remotion input format
   const remotionShots = shots.map((shot) => {
     const asset = jobAssets.find((a) => a.shotId === shot.id);
     let src: string | undefined;
     if (asset) {
-      src = resolve(asset.filePath);
+      src = toRelativeSrc(asset.filePath);
     }
 
     return {
@@ -101,7 +114,7 @@ async function main() {
     title: script.youtubeTitle,
     subtitle: script.hookText,
     shots: remotionShots,
-    audioSrc: audioAsset ? resolve(audioAsset.filePath) : undefined,
+    audioSrc: audioAsset ? toRelativeSrc(audioAsset.filePath) : undefined,
     captionWords: captionWords.length > 0 ? captionWords : undefined,
     titleDurationFrames,
     ctaDurationFrames,
@@ -121,9 +134,9 @@ async function main() {
   log.info("Rendering video...", { jobId });
   try {
     execSync(
-      `npx remotion render "${remotionRoot}" LongFormNews "${videoPath}" --props "${propsPath}" --codec h264` ,
+      `npx remotion render "${remotionRoot}" LongFormNews "${videoPath}" --props "${propsPath}" --codec h264 --public-dir "${jobAssetBase}"`,
       {
-        cwd: resolve("."),
+        cwd: process.cwd(),
         stdio: "inherit",
         timeout: 600000, // 10 min
       }
@@ -144,9 +157,9 @@ async function main() {
 
   try {
     execSync(
-      `npx remotion still "${remotionRoot}" Thumbnail "${thumbPath}" --props "${thumbPropsPath}"`,
+      `npx remotion still "${remotionRoot}" Thumbnail "${thumbPath}" --props "${thumbPropsPath}" --public-dir "${jobAssetBase}"`,
       {
-        cwd: resolve("."),
+        cwd: process.cwd(),
         stdio: "inherit",
         timeout: 120000,
       }
