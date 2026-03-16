@@ -1,4 +1,4 @@
-import { getDb, schema, createLogger } from "@ltx/shared";
+import { getDb, closeDb, schema, createLogger } from "@ltx/shared";
 import { eq, desc, inArray } from "drizzle-orm";
 
 const log = createLogger("select");
@@ -120,5 +120,7 @@ function main() {
   console.log("  select.ts --create-jobs <id,id,...>  Create jobs from idea IDs");
   console.log("  select.ts --create-jobs <id> --format short_form");
 }
+
+process.on("exit", closeDb);
 
 main();

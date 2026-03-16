@@ -1,4 +1,4 @@
-import { getDb, schema, createLogger, advanceState, toJobState, readStdin } from "@ltx/shared";
+import { getDb, closeDb, schema, createLogger, advanceState, toJobState, readStdin } from "@ltx/shared";
 import type { ShotPlan } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 
@@ -105,6 +105,8 @@ async function main() {
       .run();
   }
 }
+
+process.on("exit", closeDb);
 
 main().catch((e) => {
   log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);

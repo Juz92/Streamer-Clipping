@@ -1,4 +1,4 @@
-import { getDb, schema, hashUrl, createLogger, readStdin } from "@ltx/shared";
+import { getDb, closeDb, schema, hashUrl, createLogger, readStdin } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 
 const log = createLogger("research");
@@ -86,6 +86,8 @@ async function main() {
 
   log.info(`Done: ${inserted} inserted, ${skipped} skipped`);
 }
+
+process.on("exit", closeDb);
 
 main().catch((e) => {
   log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);

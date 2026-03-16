@@ -5,7 +5,8 @@ import * as schema from "./schema.js";
 import { existsSync, mkdirSync } from "fs";
 import { dirname, resolve } from "path";
 
-const DB_PATH = process.env.DATABASE_PATH || "data/ltx.db";
+export const DATA_DIR = resolve(process.env.LTX_DATA_DIR || "data");
+const DB_PATH = process.env.DATABASE_PATH || resolve(DATA_DIR, "ltx.db");
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _sqlite: BetterSqlite3.Database | null = null;
@@ -27,7 +28,8 @@ export function getDb() {
 
 export function getSqlite(): BetterSqlite3.Database {
   if (!_sqlite) getDb();
-  return _sqlite!;
+  if (!_sqlite) throw new Error("Database initialization failed");
+  return _sqlite;
 }
 
 export function closeDb() {

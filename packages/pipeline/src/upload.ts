@@ -1,13 +1,13 @@
-import { getDb, schema, createLogger, advanceState, toJobState } from "@ltx/shared";
+import { getDb, closeDb, DATA_DIR, schema, createLogger, advanceState, toJobState, withPipelineRetry } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 import { google } from "googleapis";
 import { readFileSync, createReadStream, existsSync } from "fs";
-import { resolve } from "path";
+import { resolve, join } from "path";
 
 const log = createLogger("upload");
 
 function loadAuth() {
-  const oauthPath = resolve("data/youtube-oauth.json");
+  const oauthPath = join(DATA_DIR, "youtube-oauth.json");
   if (!existsSync(oauthPath)) {
     throw new Error(
       "YouTube OAuth not configured. Run: npx tsx scripts/setup-youtube-oauth.ts"
@@ -84,26 +84,31 @@ async function main() {
 
   const tags = script.youtubeTags as string[];
 
-  const response = await youtube.videos.insert({
-    part: ["snippet", "status"],
-    requestBody: {
-      snippet: {
-        title: script.youtubeTitle,
-        description: script.youtubeDescription,
-        tags,
-        categoryId: "28", // Science & Technology
-        defaultLanguage: "en",
-      },
-      status: {
-        privacyStatus: "private",
-        selfDeclaredMadeForKids: false,
-        publishAt: scheduledAt,
-      },
+  const response = await withPipelineRetry(
+    async () => {
+      return youtube.videos.insert({
+        part: ["snippet", "status"],
+        requestBody: {
+          snippet: {
+            title: script.youtubeTitle,
+            description: script.youtubeDescription,
+            tags,
+            categoryId: "28", // Science & Technology
+            defaultLanguage: "en",
+          },
+          status: {
+            privacyStatus: "private",
+            selfDeclaredMadeForKids: false,
+            publishAt: scheduledAt,
+          },
+        },
+        media: {
+          body: createReadStream(videoAsset.filePath),
+        },
+      });
     },
-    media: {
-      body: createReadStream(videoAsset.filePath),
-    },
-  });
+    { maxRetries: 2, baseDelayMs: 5000, jobId }
+  );
 
   const videoId = response.data.id;
   if (!videoId) {
@@ -153,6 +158,8 @@ async function main() {
   log.info(`Upload complete. Video ID: ${videoId}`, { jobId });
   console.log(`\nYouTube Studio: https://studio.youtube.com/video/${videoId}/edit`);
 }
+
+process.on("exit", closeDb);
 
 main().catch((e) => {
   log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);

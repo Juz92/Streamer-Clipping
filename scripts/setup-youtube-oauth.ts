@@ -1,5 +1,5 @@
 import { authenticate } from "@google-cloud/local-auth";
-import { writeFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 
 const SCOPES = [
@@ -63,7 +63,6 @@ async function main() {
 
   // Clean up temp file
   try {
-    const { unlinkSync } = await import("fs");
     unlinkSync(tempKeysPath);
   } catch {}
 

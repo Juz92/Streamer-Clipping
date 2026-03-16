@@ -1,21 +1,11 @@
-import { getDb, schema, createLogger, advanceState, toJobState } from "@ltx/shared";
+import { getDb, closeDb, DATA_DIR, schema, createLogger, advanceState, toJobState, ensureDir, msToFrames } from "@ltx/shared";
 import type { ShotPlan } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 
 const log = createLogger("render");
-
-function ensureDir(dir: string) {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-}
-
-function msToFrames(ms: number, fps: number): number {
-  return Math.round((ms / 1000) * fps);
-}
 
 async function main() {
   const args = process.argv.slice(2);
@@ -117,7 +107,7 @@ async function main() {
     ctaDurationFrames,
   };
 
-  const outputDir = resolve(`data/assets/job-${jobId}/output`);
+  const outputDir = join(DATA_DIR, `assets/job-${jobId}/output`);
   ensureDir(outputDir);
 
   const propsPath = resolve(outputDir, "input-props.json");
@@ -136,7 +126,6 @@ async function main() {
         cwd: resolve("."),
         stdio: "inherit",
         timeout: 600000, // 10 min
-        env: { ...process.env, PATH: process.env.PATH + ":/c/Users/Justi/AppData/Local/Microsoft/WinGet/Links" },
       }
     );
   } catch (e) {
@@ -160,7 +149,6 @@ async function main() {
         cwd: resolve("."),
         stdio: "inherit",
         timeout: 120000,
-        env: { ...process.env, PATH: process.env.PATH + ":/c/Users/Justi/AppData/Local/Microsoft/WinGet/Links" },
       }
     );
   } catch (e) {
@@ -196,6 +184,8 @@ async function main() {
 
   log.info(`Render complete: ${videoPath}`, { jobId });
 }
+
+process.on("exit", closeDb);
 
 main().catch((e) => {
   log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);

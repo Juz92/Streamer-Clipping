@@ -1,3 +1,5 @@
+import { interFontFamily } from "./fonts";
+
 export const theme = {
   colors: {
     bg: "#0a0a0f",
@@ -14,8 +16,8 @@ export const theme = {
     error: "#ef4444",
   },
   fonts: {
-    heading: "Inter, system-ui, sans-serif",
-    body: "Inter, system-ui, sans-serif",
+    heading: interFontFamily,
+    body: interFontFamily,
     mono: "'JetBrains Mono', monospace",
   },
   fontSizes: {

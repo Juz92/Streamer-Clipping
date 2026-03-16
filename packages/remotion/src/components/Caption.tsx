@@ -70,7 +70,6 @@ export const Caption: React.FC<CaptionProps> = ({
                     ? theme.colors.captionHighlight
                     : theme.colors.text,
                 fontWeight: i === activeIdx ? 700 : 400,
-                transition: "color 0.1s",
               }}
             >
               {w.word}{" "}

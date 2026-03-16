@@ -1,9 +1,9 @@
-import { getDb, schema, createLogger, advanceState, toJobState } from "@ltx/shared";
+import { getDb, closeDb, DATA_DIR, schema, createLogger, advanceState, toJobState, ensureDir, withPipelineRetry } from "@ltx/shared";
 import type { WordTimestamp } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 import { EdgeTTS } from "node-edge-tts";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { resolve } from "path";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { resolve, join } from "path";
 
 const log = createLogger("voiceover");
 
@@ -51,12 +51,6 @@ function generateSrt(entries: SubtitleEntry[], wordsPerGroup: number = 6): strin
   return lines.join("\n");
 }
 
-function ensureDir(dir: string) {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-}
-
 async function main() {
   const args = process.argv.slice(2);
 
@@ -88,25 +82,29 @@ async function main() {
     process.exit(1);
   }
 
-  const audioDir = resolve(`data/assets/job-${jobId}/audio`);
-  const srtDir = resolve(`data/assets/job-${jobId}/srt`);
+  const audioDir = join(DATA_DIR, `assets/job-${jobId}/audio`);
+  const srtDir = join(DATA_DIR, `assets/job-${jobId}/srt`);
   ensureDir(audioDir);
   ensureDir(srtDir);
 
-  const audioPath = resolve(audioDir, "narration.mp3");
-  const srtPath = resolve(srtDir, "captions.srt");
+  const audioPath = join(audioDir, "narration.mp3");
+  const srtPath = join(srtDir, "captions.srt");
 
   log.info(`Generating voiceover with voice ${TTS_VOICE}`, { jobId });
 
-  const tts = new EdgeTTS({
-    voice: TTS_VOICE,
-    lang: "en-US",
-    outputFormat: "audio-24khz-96kbitrate-mono-mp3",
-    saveSubtitles: true,
-    timeout: 60000,
-  });
-
-  await tts.ttsPromise(script.fullNarration, audioPath);
+  await withPipelineRetry(
+    async () => {
+      const tts = new EdgeTTS({
+        voice: TTS_VOICE,
+        lang: "en-US",
+        outputFormat: "audio-24khz-96kbitrate-mono-mp3",
+        saveSubtitles: true,
+        timeout: 60000,
+      });
+      await tts.ttsPromise(script.fullNarration, audioPath);
+    },
+    { maxRetries: 3, baseDelayMs: 2000, jobId }
+  );
 
   const subtitlePath = `${audioPath}.json`;
   if (!existsSync(subtitlePath)) {
@@ -118,12 +116,17 @@ async function main() {
     readFileSync(subtitlePath, "utf-8")
   );
 
+  if (subtitleEntries.length === 0) {
+    log.error("Subtitle entries are empty — TTS may have produced no output");
+    process.exit(1);
+  }
+
   const wordTimestamps = subtitlesToWordTimestamps(subtitleEntries);
   const srtContent = generateSrt(subtitleEntries);
   writeFileSync(srtPath, srtContent, "utf-8");
 
   const lastEntry = subtitleEntries[subtitleEntries.length - 1];
-  const durationMs = lastEntry ? lastEntry.end : 0;
+  const durationMs = lastEntry.end;
 
   db.insert(schema.assets)
     .values({
@@ -156,6 +159,8 @@ async function main() {
     { jobId }
   );
 }
+
+process.on("exit", closeDb);
 
 main().catch((e) => {
   log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);

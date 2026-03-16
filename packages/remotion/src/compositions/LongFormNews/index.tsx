@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Audio, Sequence, staticFile } from "remotion";
+import { AbsoluteFill, Audio, Sequence, Video } from "remotion";
 import type { LongFormNewsProps, ShotInput } from "./schema";
 import { TitleCard } from "./scenes/TitleCard";
 import { Screenshot } from "./scenes/Screenshot";
@@ -11,9 +11,10 @@ import { theme } from "../../styles/theme";
 function renderShot(shot: ShotInput) {
   switch (shot.type) {
     case "screenshot":
+      if (!shot.src) return null;
       return (
         <Screenshot
-          src={shot.src!}
+          src={shot.src}
           caption={shot.caption}
           kenBurns={shot.kenBurns}
         />
@@ -21,9 +22,10 @@ function renderShot(shot: ShotInput) {
     case "text_card":
       return <TextCard heading={shot.heading || ""} body={shot.body} />;
     case "browser_recording":
+      if (!shot.src) return null;
       return (
         <AbsoluteFill style={{ backgroundColor: theme.colors.bg }}>
-          <video
+          <Video
             src={shot.src}
             style={{ width: "100%", height: "100%", objectFit: "contain" }}
           />
