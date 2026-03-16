@@ -1,4 +1,4 @@
-import { getDb, schema, hashUrl, createLogger } from "@ltx/shared";
+import { getDb, schema, hashUrl, createLogger, readStdin } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 
 const log = createLogger("research");
@@ -23,11 +23,7 @@ async function main() {
     process.exit(1);
   }
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  const raw = await readStdin();
 
   let ideas: IdeaInput[];
   try {
@@ -36,7 +32,7 @@ async function main() {
       throw new Error("Expected JSON array");
     }
   } catch (e) {
-    log.error(`Invalid JSON input: ${(e as Error).message}`);
+    log.error(`Invalid JSON input: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 
@@ -92,6 +88,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  log.error(`Fatal: ${e.message}`);
+  log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);
 });

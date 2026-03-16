@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const ideas = sqliteTable("ideas", {
@@ -20,7 +20,9 @@ export const ideas = sqliteTable("ideas", {
   })
     .notNull()
     .default("new"),
-});
+}, (table) => ([
+  index("idx_ideas_status_score").on(table.status, table.compositeScore),
+]));
 
 export const jobs = sqliteTable("jobs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -57,7 +59,9 @@ export const jobs = sqliteTable("jobs", {
   updatedAt: text("updated_at")
     .notNull()
     .default(sql`(datetime('now'))`),
-});
+}, (table) => ([
+  index("idx_jobs_state").on(table.state),
+]));
 
 export const scripts = sqliteTable("scripts", {
   id: integer("id").primaryKey({ autoIncrement: true }),

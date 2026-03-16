@@ -45,6 +45,13 @@ export function canTransition(from: JobState, to: JobState): boolean {
   return STATE_TRANSITIONS[from].includes(to);
 }
 
+export function toJobState(value: string): JobState {
+  if (!JOB_STATES.includes(value as JobState)) {
+    throw new Error(`Invalid job state: ${value}`);
+  }
+  return value as JobState;
+}
+
 export function advanceState(current: JobState, next: JobState): JobState {
   if (!canTransition(current, next)) {
     throw new Error(`Invalid state transition: ${current} -> ${next}`);

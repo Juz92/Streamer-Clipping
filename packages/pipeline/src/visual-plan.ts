@@ -1,4 +1,4 @@
-import { getDb, schema, createLogger, advanceState } from "@ltx/shared";
+import { getDb, schema, createLogger, advanceState, toJobState, readStdin } from "@ltx/shared";
 import type { ShotPlan } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 
@@ -8,15 +8,17 @@ function validate(data: unknown): ShotPlan[] {
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error("Expected non-empty JSON array of shots");
   }
-  for (const shot of data) {
-    const s = shot as Record<string, unknown>;
+  const shots: ShotPlan[] = [];
+  for (const raw of data) {
+    const s = raw as Record<string, unknown>;
     if (!s.id || typeof s.id !== "string") {
       throw new Error("Shot missing id");
     }
     if (!s.sectionId || typeof s.sectionId !== "string") {
       throw new Error(`Shot ${s.id} missing sectionId`);
     }
-    if (!["screenshot", "browser_recording", "text_card"].includes(s.type as string)) {
+    const validTypes = ["screenshot", "browser_recording", "text_card"] as const;
+    if (!validTypes.includes(s.type as typeof validTypes[number])) {
       throw new Error(`Shot ${s.id} has invalid type: ${s.type}`);
     }
     if ((s.type === "screenshot" || s.type === "browser_recording") && !s.url) {
@@ -25,8 +27,21 @@ function validate(data: unknown): ShotPlan[] {
     if (!s.durationMs || typeof s.durationMs !== "number") {
       throw new Error(`Shot ${s.id} missing or invalid durationMs`);
     }
+    shots.push({
+      id: s.id,
+      sectionId: s.sectionId,
+      type: s.type as ShotPlan["type"],
+      url: s.url as string | undefined,
+      selector: s.selector as string | undefined,
+      scrollTo: s.scrollTo as string | undefined,
+      clickSequence: s.clickSequence as string[] | undefined,
+      durationMs: s.durationMs,
+      caption: s.caption as string | undefined,
+      textContent: s.textContent as string | undefined,
+      kenBurns: s.kenBurns as ShotPlan["kenBurns"],
+    });
   }
-  return data as ShotPlan[];
+  return shots;
 }
 
 async function main() {
@@ -52,37 +67,46 @@ async function main() {
     process.exit(1);
   }
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  const raw = await readStdin();
 
   let shots: ShotPlan[];
   try {
     shots = validate(JSON.parse(raw));
   } catch (e) {
-    log.error(`Validation failed: ${(e as Error).message}`);
+    log.error(`Validation failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 
-  db.insert(schema.visualPlans)
-    .values({
-      jobId,
-      shots,
-    })
-    .run();
+  const existing = db
+    .select()
+    .from(schema.visualPlans)
+    .where(eq(schema.visualPlans.jobId, jobId))
+    .get();
 
-  const newState = advanceState(job.state as any, "visual_planned");
-  db.update(schema.jobs)
-    .set({ state: newState, updatedAt: new Date().toISOString() })
-    .where(eq(schema.jobs.id, jobId))
-    .run();
+  if (existing) {
+    db.update(schema.visualPlans)
+      .set({ shots })
+      .where(eq(schema.visualPlans.jobId, jobId))
+      .run();
+    log.info(`Visual plan updated for job ${jobId}: ${shots.length} shots`, { jobId });
+  } else {
+    db.insert(schema.visualPlans)
+      .values({ jobId, shots })
+      .run();
+    log.info(`Visual plan saved for job ${jobId}: ${shots.length} shots`, { jobId });
+  }
 
-  log.info(`Visual plan saved for job ${jobId}: ${shots.length} shots`, { jobId });
+  const currentState = toJobState(job.state);
+  if (currentState !== "visual_planned") {
+    const newState = advanceState(currentState, "visual_planned");
+    db.update(schema.jobs)
+      .set({ state: newState, updatedAt: new Date().toISOString() })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
+  }
 }
 
 main().catch((e) => {
-  log.error(`Fatal: ${e.message}`);
+  log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);
 });

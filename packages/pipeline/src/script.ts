@@ -1,4 +1,4 @@
-import { getDb, schema, createLogger, advanceState } from "@ltx/shared";
+import { getDb, schema, createLogger, advanceState, toJobState, readStdin } from "@ltx/shared";
 import type { ScriptPackage, ScriptSection } from "@ltx/shared";
 import { eq } from "drizzle-orm";
 
@@ -12,10 +12,18 @@ function validate(data: unknown): ScriptPackage {
   if (!Array.isArray(pkg.sections) || pkg.sections.length === 0) {
     throw new Error("Missing or empty sections array");
   }
-  for (const s of pkg.sections as ScriptSection[]) {
-    if (!s.id || !s.heading || !s.narration) {
-      throw new Error(`Section missing required fields: ${JSON.stringify(s)}`);
+  const sections: ScriptSection[] = [];
+  for (const raw of pkg.sections as Record<string, unknown>[]) {
+    if (!raw.id || !raw.heading || !raw.narration) {
+      throw new Error(`Section missing required fields: ${JSON.stringify(raw)}`);
     }
+    sections.push({
+      id: raw.id as string,
+      heading: raw.heading as string,
+      narration: raw.narration as string,
+      visualNotes: (raw.visualNotes as string) || "",
+      durationEstimateSec: (raw.durationEstimateSec as number) || 0,
+    });
   }
   if (!pkg.fullNarration || typeof pkg.fullNarration !== "string") {
     throw new Error("Missing or invalid fullNarration");
@@ -29,7 +37,14 @@ function validate(data: unknown): ScriptPackage {
   if (!Array.isArray(pkg.youtubeTags)) {
     throw new Error("Missing or invalid youtubeTags array");
   }
-  return pkg as unknown as ScriptPackage;
+  return {
+    hookText: pkg.hookText as string,
+    sections,
+    fullNarration: pkg.fullNarration as string,
+    youtubeTitle: pkg.youtubeTitle as string,
+    youtubeDescription: pkg.youtubeDescription as string,
+    youtubeTags: pkg.youtubeTags as string[],
+  };
 }
 
 async function main() {
@@ -55,42 +70,61 @@ async function main() {
     process.exit(1);
   }
 
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  const raw = Buffer.concat(chunks).toString("utf-8").trim();
+  const raw = await readStdin();
 
   let scriptPkg: ScriptPackage;
   try {
     scriptPkg = validate(JSON.parse(raw));
   } catch (e) {
-    log.error(`Validation failed: ${(e as Error).message}`);
+    log.error(`Validation failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 
-  db.insert(schema.scripts)
-    .values({
-      jobId,
-      hookText: scriptPkg.hookText,
-      sections: scriptPkg.sections,
-      fullNarration: scriptPkg.fullNarration,
-      youtubeTitle: scriptPkg.youtubeTitle,
-      youtubeDescription: scriptPkg.youtubeDescription,
-      youtubeTags: scriptPkg.youtubeTags,
-    })
-    .run();
+  const existing = db
+    .select()
+    .from(schema.scripts)
+    .where(eq(schema.scripts.jobId, jobId))
+    .get();
 
-  const newState = advanceState(job.state as any, "scripted");
-  db.update(schema.jobs)
-    .set({ state: newState, updatedAt: new Date().toISOString() })
-    .where(eq(schema.jobs.id, jobId))
-    .run();
+  if (existing) {
+    db.update(schema.scripts)
+      .set({
+        hookText: scriptPkg.hookText,
+        sections: scriptPkg.sections,
+        fullNarration: scriptPkg.fullNarration,
+        youtubeTitle: scriptPkg.youtubeTitle,
+        youtubeDescription: scriptPkg.youtubeDescription,
+        youtubeTags: scriptPkg.youtubeTags,
+      })
+      .where(eq(schema.scripts.jobId, jobId))
+      .run();
+    log.info(`Script updated for job ${jobId}`, { jobId, title: scriptPkg.youtubeTitle });
+  } else {
+    db.insert(schema.scripts)
+      .values({
+        jobId,
+        hookText: scriptPkg.hookText,
+        sections: scriptPkg.sections,
+        fullNarration: scriptPkg.fullNarration,
+        youtubeTitle: scriptPkg.youtubeTitle,
+        youtubeDescription: scriptPkg.youtubeDescription,
+        youtubeTags: scriptPkg.youtubeTags,
+      })
+      .run();
+    log.info(`Script saved for job ${jobId}`, { jobId, title: scriptPkg.youtubeTitle });
+  }
 
-  log.info(`Script saved for job ${jobId}`, { jobId, title: scriptPkg.youtubeTitle });
+  const currentState = toJobState(job.state);
+  if (currentState !== "scripted") {
+    const newState = advanceState(currentState, "scripted");
+    db.update(schema.jobs)
+      .set({ state: newState, updatedAt: new Date().toISOString() })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
+  }
 }
 
 main().catch((e) => {
-  log.error(`Fatal: ${e.message}`);
+  log.error(`Fatal: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);
 });

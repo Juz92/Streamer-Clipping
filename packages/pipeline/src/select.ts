@@ -28,8 +28,18 @@ function showTop(n: number) {
   }
 }
 
-function createJobs(idStr: string, format: "long_form" | "short_form") {
-  const ids = idStr.split(",").map((s) => parseInt(s.trim(), 10));
+const VALID_FORMATS = ["long_form", "short_form"] as const;
+type VideoFormat = typeof VALID_FORMATS[number];
+
+function createJobs(idStr: string, format: VideoFormat) {
+  const ids = idStr
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => !isNaN(n));
+  if (ids.length === 0) {
+    log.error("No valid numeric IDs provided");
+    process.exit(1);
+  }
   const db = getDb();
 
   const existingIdeas = db
@@ -92,9 +102,15 @@ function main() {
       log.error("Usage: select.ts --create-jobs <id,id,...> [--format short_form]");
       process.exit(1);
     }
-    const format = args.includes("--format")
-      ? (args[args.indexOf("--format") + 1] as "long_form" | "short_form")
-      : "long_form";
+    let format: VideoFormat = "long_form";
+    if (args.includes("--format")) {
+      const rawFormat = args[args.indexOf("--format") + 1];
+      if (!VALID_FORMATS.includes(rawFormat as VideoFormat)) {
+        log.error(`Invalid format: ${rawFormat}. Must be one of: ${VALID_FORMATS.join(", ")}`);
+        process.exit(1);
+      }
+      format = rawFormat as VideoFormat;
+    }
     createJobs(idStr, format);
     return;
   }

@@ -8,6 +8,7 @@ export {
   STATE_TRANSITIONS,
   canTransition,
   advanceState,
+  toJobState,
 } from "./types/job-states.js";
 export type { ScriptSection, ScriptPackage } from "./types/script.js";
 export type { ShotPlan } from "./types/visual-plan.js";
@@ -23,3 +24,4 @@ export type {
 export { createLogger } from "./utils/logger.js";
 export { hashUrl } from "./utils/hash.js";
 export { withPipelineRetry } from "./utils/retry.js";
+export { readStdin } from "./utils/stdin.js";
