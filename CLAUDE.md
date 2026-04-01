@@ -42,6 +42,13 @@ The automated analysis catches REACTIONS but misses HUMOR. The manual transcript
 
 ## Key Commands
 ```bash
+# Full pipeline (single command)
+npx tsx packages/clips/src/orchestrate.ts                          # Latest stream, full pipeline
+npx tsx packages/clips/src/orchestrate.ts --url <url>              # Specific stream
+npx tsx packages/clips/src/orchestrate.ts --stream <id> --from analyze  # Resume from step
+npx tsx packages/clips/src/orchestrate.ts --top 5 --dry-run        # Preview plan
+
+# Individual modules
 npx tsx packages/clips/src/discover.ts                    # Download latest stream
 npx tsx packages/clips/src/discover.ts --list             # List 10 recent streams
 npx tsx packages/clips/src/discover.ts --url <url>        # Specific stream
@@ -50,15 +57,20 @@ npx tsx packages/clips/src/scan.ts --stream <id>          # Chunked transcript s
 npx tsx packages/clips/src/preview.ts --stream <id>       # Pre-render QA frames
 npx tsx packages/clips/src/render-fast.ts --stream <id> --clips 1,2,3   # Fast ffmpeg render
 npx tsx packages/clips/src/clip.ts --stream <id> --moments 1,2,5       # Remotion render
+npx tsx packages/clips/src/upload.ts --stream <id>                     # Upload all shorts to YouTube
+npx tsx packages/clips/src/upload.ts --stream <id> --clips 1,3         # Upload specific clips
+npx tsx packages/clips/src/upload.ts --auth                            # OAuth setup (first time)
 ```
 
 ## Clip Pipeline Modules (packages/clips/src/)
+- `orchestrate.ts` — Full pipeline orchestrator: discover → analyze → clip → render → upload (--url, --stream, --from, --top, --dry-run)
 - `discover.ts` — Find latest livestream, download video + auto-subs + chat replay via yt-dlp
 - `analyze.ts` — Run 3 signal analyses, cross-reference, rank moments (--stream, --top, --json)
 - `scan.ts` — Chunked transcript scanning with signal annotations (--around, --before, --search, --timeline, --merge)
 - `preview.ts` — Pre-render QA: frame extraction, layout detection, caption check (--captions --edit for SRT export)
 - `render-fast.ts` — Fast ffmpeg rendering, 5-10x faster than Remotion (--clips, --srt, --layout, --no-captions)
 - `clip.ts` — Remotion rendering for complex compositions (--stream, --moments, --preview, --setup)
+- `upload.ts` — YouTube Shorts upload via OAuth2 (--stream, --clips, --dry-run, --auth). Uploads as private for QA review.
 - `lib/signals.ts` — Transcript (5-tier keyword weights + caps + sentiment) + chat signal detection
 - `lib/audio-analyzer.ts` — Per-frame RMS extraction, spike detection (+20dB threshold), silence-to-loud transitions
 - `lib/chat-parser.ts` — JSONL chat replay parsing, 10s binning, message rate + emoji density

@@ -101,7 +101,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const streamDir = getStreamDir(streamId);
+  const streamDir = manifest.jobDir || getStreamDir(streamId);
   let transcriptSignals: TranscriptSignal[] = [];
   let chatSignals: ChatSignal[] = [];
   let audioSignals: AudioSignal[] = [];

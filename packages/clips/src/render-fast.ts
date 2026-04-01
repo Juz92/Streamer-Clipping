@@ -367,7 +367,7 @@ async function main(): Promise<void> {
   // Load subtitles if available
   let allWords: ReturnType<typeof vttToWordTimestamps> | null = null;
   if (!noCaptions && manifest.subtitlePath) {
-    const subtitleFullPath = join(streamDir, manifest.subtitlePath);
+    const subtitleFullPath = manifest.subtitlePath;
     if (existsSync(subtitleFullPath)) {
       const cues = parseVtt(subtitleFullPath);
       allWords = vttToWordTimestamps(cues);

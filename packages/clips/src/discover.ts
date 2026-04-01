@@ -100,11 +100,12 @@ async function download(): Promise<void> {
     log.warn(`Could not fetch metadata: ${err.message}`);
   }
 
-  // Create working directory
-  const dir = getStreamDir(streamId);
-  ensureDir(dir);
+  // Create working directory (job-NNN-YYYY-MM-DD format)
+  const dir = getStreamDir(streamId, uploadDate !== "unknown" ? uploadDate : undefined);
+  const sourceDir = join(dir, "source");
+  ensureDir(sourceDir);
 
-  const videoPath = join(dir, "stream.mp4");
+  const videoPath = join(sourceDir, "stream.mp4");
 
   // Check if already downloaded
   if (existsSync(videoPath)) {
@@ -125,8 +126,8 @@ async function download(): Promise<void> {
 
   // Download auto-subs
   let subtitlePath: string | null = null;
-  const subsOutput = join(dir, "stream");
-  const expectedSubPath = join(dir, "stream.en.vtt");
+  const subsOutput = join(sourceDir, "stream");
+  const expectedSubPath = join(sourceDir, "stream.en.vtt");
 
   try {
     run(
@@ -145,8 +146,8 @@ async function download(): Promise<void> {
 
   // Download live chat
   let chatPath: string | null = null;
-  const chatOutput = join(dir, "chat");
-  const expectedChatPath = join(dir, "chat.live_chat.json");
+  const chatOutput = join(sourceDir, "chat");
+  const expectedChatPath = join(sourceDir, "chat.live_chat.json");
 
   try {
     run(
@@ -170,6 +171,7 @@ async function download(): Promise<void> {
     title,
     uploadDate,
     durationSec,
+    jobDir: dir,
     videoPath,
     subtitlePath,
     chatPath,

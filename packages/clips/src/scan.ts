@@ -858,7 +858,7 @@ async function main(): Promise<void> {
   // Load captions for scan modes
   let allWords: CaptionWord[] = [];
   if (manifest.subtitlePath) {
-    const subtitlePath = join(streamDir, manifest.subtitlePath);
+    const subtitlePath = manifest.subtitlePath;
     if (existsSync(subtitlePath)) {
       const cues = parseVtt(subtitlePath);
       allWords = vttToWordTimestamps(cues);
