@@ -1,0 +1,1 @@
+{"root":["./src/analyze.ts","./src/clip.ts","./src/discover.ts","./src/preview.ts","./src/render-fast.ts","./src/scan.ts","./src/lib/audio-analyzer.ts","./src/lib/chat-parser.ts","./src/lib/config.ts","./src/lib/layout.ts","./src/lib/manifest.ts","./src/lib/scorer.ts","./src/lib/signals.ts","./src/lib/subtitle-parser.ts"],"version":"5.9.3"}

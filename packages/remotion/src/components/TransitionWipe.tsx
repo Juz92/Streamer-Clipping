@@ -3,7 +3,7 @@ import { useCurrentFrame, useVideoConfig, interpolate } from "remotion";
 
 interface TransitionWipeProps {
   children: React.ReactNode;
-  direction?: "left" | "right" | "up" | "down";
+  direction?: "left" | "right" | "up" | "down" | "zoom-punch";
   durationFrames?: number;
 }
 
@@ -48,11 +48,18 @@ export const TransitionWipe: React.FC<TransitionWipeProps> = ({
       enterTransform = `translateY(${-(1 - enterProgress) * 100}%)`;
       exitTransform = `translateY(${exitProgress * 100}%)`;
       break;
+    case "zoom-punch":
+      enterTransform = `scale(${0.3 + enterProgress * 0.7})`;
+      exitTransform = `scale(${1 + exitProgress * 0.5})`;
+      break;
   }
 
   const transform = frame < exitStart ? enterTransform : exitTransform;
+  const opacity = direction === "zoom-punch"
+    ? frame < exitStart ? enterProgress : 1 - exitProgress
+    : 1;
 
   return (
-    <div style={{ width: "100%", height: "100%", transform }}>{children}</div>
+    <div style={{ width: "100%", height: "100%", transform, opacity }}>{children}</div>
   );
 };

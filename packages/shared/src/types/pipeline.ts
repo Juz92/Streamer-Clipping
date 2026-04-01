@@ -6,9 +6,10 @@ export interface WordTimestamp {
 
 export interface CaptureResult {
   shotId: string;
-  type: "screenshot" | "recording";
+  type: "still_image" | "map" | "timeline" | "badge" | "broll_video";
   filePath: string;
   durationMs?: number;
+  attribution?: string;
 }
 
 export interface VoiceoverResult {

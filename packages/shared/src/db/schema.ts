@@ -52,7 +52,12 @@ export const jobs = sqliteTable("jobs", {
     enum: ["long_form", "short_form"],
   })
     .notNull()
-    .default("long_form"),
+    .default("short_form"),
+  targetPlatform: text("target_platform", {
+    enum: ["youtube_shorts", "tiktok", "instagram_reels", "all"],
+  })
+    .notNull()
+    .default("all"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -75,6 +80,9 @@ export const scripts = sqliteTable("scripts", {
   youtubeTitle: text("youtube_title").notNull(),
   youtubeDescription: text("youtube_description").notNull(),
   youtubeTags: text("youtube_tags", { mode: "json" }).notNull(),
+  tiktokCaption: text("tiktok_caption"),
+  instagramCaption: text("instagram_caption"),
+  pinnedComment: text("pinned_comment"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -106,10 +114,18 @@ export const assets = sqliteTable("assets", {
       "srt",
       "rendered_video",
       "thumbnail",
+      "still_image",
+      "map",
+      "timeline",
+      "badge",
+      "broll_video",
+      "music",
     ],
   }).notNull(),
   filePath: text("file_path").notNull(),
   durationMs: integer("duration_ms"),
+  attribution: text("attribution"),
+  sourceUrl: text("source_url"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -128,6 +144,11 @@ export const uploads = sqliteTable("uploads", {
     .notNull()
     .default("private"),
   scheduledPublishAt: text("scheduled_publish_at"),
+  platform: text("platform", {
+    enum: ["youtube", "tiktok", "instagram"],
+  })
+    .notNull()
+    .default("youtube"),
   uploadedAt: text("uploaded_at")
     .notNull()
     .default(sql`(datetime('now'))`),
@@ -142,7 +163,7 @@ export const comments = sqliteTable("comments", {
   authorName: text("author_name").notNull(),
   text: text("text").notNull(),
   classification: text("classification", {
-    enum: ["positive", "question", "constructive", "spam", "negative"],
+    enum: ["positive", "question", "constructive", "spam", "negative", "suggestion"],
   }),
   replyDraft: text("reply_draft"),
   replyStatus: text("reply_status", {
@@ -152,3 +173,33 @@ export const comments = sqliteTable("comments", {
     .notNull()
     .default(sql`(datetime('now'))`),
 });
+
+export const analytics = sqliteTable("analytics", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  jobId: integer("job_id")
+    .notNull()
+    .references(() => jobs.id),
+  platform: text("platform", {
+    enum: ["youtube", "tiktok", "instagram"],
+  }).notNull(),
+  views: integer("views").default(0),
+  watchTimeMinutes: real("watch_time_minutes").default(0),
+  avgViewDurationSec: real("avg_view_duration_sec").default(0),
+  likes: integer("likes").default(0),
+  comments: integer("comments").default(0),
+  shares: integer("shares").default(0),
+  ctr: real("ctr").default(0),
+  impressions: integer("impressions").default(0),
+  subscribersGained: integer("subscribers_gained").default(0),
+  subscribersLost: integer("subscribers_lost").default(0),
+  estimatedRetentionPct: real("estimated_retention_pct").default(0),
+  trafficSource: text("traffic_source"),
+  avgViewPct: real("avg_view_pct").default(0),
+  videoAgeHours: real("video_age_hours").default(0),
+  fetchedAt: text("fetched_at")
+    .notNull()
+    .default(sql`(datetime('now'))`),
+}, (table) => ([
+  index("idx_analytics_job_platform").on(table.jobId, table.platform),
+]));
+

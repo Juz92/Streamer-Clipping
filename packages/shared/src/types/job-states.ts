@@ -58,3 +58,9 @@ export function advanceState(current: JobState, next: JobState): JobState {
   }
   return next;
 }
+
+/** Returns true if the job is already at or past the given state (ignoring "failed"). */
+export function isAtOrPast(current: JobState, target: JobState): boolean {
+  if (current === "failed") return false;
+  return JOB_STATES.indexOf(current) >= JOB_STATES.indexOf(target);
+}

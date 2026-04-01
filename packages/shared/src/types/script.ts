@@ -4,6 +4,8 @@ export interface ScriptSection {
   narration: string;
   visualNotes: string;
   durationEstimateSec: number;
+  formulaAct?: "hook" | "setup" | "turn" | "payoff" | "sting";
+  chapter?: string;
 }
 
 export interface ScriptPackage {
@@ -13,4 +15,9 @@ export interface ScriptPackage {
   youtubeTitle: string;
   youtubeDescription: string;
   youtubeTags: string[];
+  tiktokCaption?: string;
+  instagramCaption?: string;
+  playerName?: string;
+  seriesFormat?: string;
+  pinnedComment?: string;
 }

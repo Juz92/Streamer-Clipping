@@ -1,60 +1,29 @@
 import React from "react";
 import { Composition, Still } from "remotion";
-import { LongFormNews } from "./compositions/LongFormNews/index";
-import { longFormNewsSchema } from "./compositions/LongFormNews/schema";
+import { GamingShort } from "./compositions/GamingShort/index";
+import { gamingShortSchema } from "./compositions/GamingShort/schema";
 import { Thumbnail } from "./compositions/Thumbnail/index";
 import { thumbnailSchema } from "./compositions/Thumbnail/schema";
-
-const defaultLongFormProps = {
-  title: "AI News Today",
-  subtitle: "The latest in artificial intelligence",
-  shots: [
-    {
-      id: "demo-1",
-      type: "text_card" as const,
-      heading: "Breaking AI News",
-      body: "This is a preview of the LongFormNews template.",
-      durationFrames: 90,
-    },
-    {
-      id: "demo-2",
-      type: "text_card" as const,
-      heading: "Key Takeaway",
-      body: "Templates are driven by data from the pipeline database.",
-      durationFrames: 90,
-    },
-  ],
-  titleDurationFrames: 150,
-  ctaDurationFrames: 150,
-};
-
-const defaultThumbnailProps = {
-  title: "GPT-5 Just Changed Everything",
-  accentColor: "#6366f1",
-};
 
 export const RemotionRoot: React.FC = () => {
   return (
     <>
       <Composition
-        id="LongFormNews"
-        component={LongFormNews}
-        durationInFrames={
-          defaultLongFormProps.titleDurationFrames +
-          defaultLongFormProps.shots.reduce((sum, s) => sum + s.durationFrames, 0) +
-          defaultLongFormProps.ctaDurationFrames
-        }
+        id="GamingShort"
+        component={GamingShort}
+        durationInFrames={900}
         fps={30}
-        width={1920}
-        height={1080}
-        schema={longFormNewsSchema}
-        defaultProps={defaultLongFormProps}
+        width={1080}
+        height={1920}
+        schema={gamingShortSchema}
+        defaultProps={{
+          clipSrc: "stream.mp4",
+          layoutMode: "gameplay" as const,
+          avatarRegion: { x: 24, y: 24, w: 380, h: 380 },
+          gameplayRegion: { x: 0, y: 0, w: 1920, h: 1080 },
+        }}
         calculateMetadata={async ({ props }) => {
-          const totalFrames =
-            (props.titleDurationFrames ?? 150) +
-            props.shots.reduce((sum: number, s: { durationFrames: number }) => sum + s.durationFrames, 0) +
-            (props.ctaDurationFrames ?? 150);
-          return { durationInFrames: totalFrames };
+          return { durationInFrames: props.durationFrames ?? 900 };
         }}
       />
       <Still
@@ -63,7 +32,11 @@ export const RemotionRoot: React.FC = () => {
         width={1280}
         height={720}
         schema={thumbnailSchema}
-        defaultProps={defaultThumbnailProps}
+        defaultProps={{
+          title: "Daily Peanut Clips",
+          accentColor: "#d4a017",
+          variant: "bold" as const,
+        }}
       />
     </>
   );

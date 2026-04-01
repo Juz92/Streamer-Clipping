@@ -2,7 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/shared" },
-    { "path": "packages/pipeline" },
-    { "path": "packages/remotion" }
+    { "path": "packages/remotion" },
+    { "path": "packages/clips" }
   ]
 }

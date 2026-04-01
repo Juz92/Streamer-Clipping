@@ -15,6 +15,27 @@
       "when": 1773651663335,
       "tag": "0001_bumpy_mentallo",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1773665524136,
+      "tag": "0002_nappy_natasha_romanoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1773955200000,
+      "tag": "0003_long_form_analytics",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1774272000000,
+      "tag": "0004_analytics_extended",
+      "breakpoints": true
     }
   ]
 }

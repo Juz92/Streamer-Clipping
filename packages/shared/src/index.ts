@@ -9,6 +9,7 @@ export {
   canTransition,
   advanceState,
   toJobState,
+  isAtOrPast,
 } from "./types/job-states.js";
 export type { ScriptSection, ScriptPackage } from "./types/script.js";
 export type { ShotPlan } from "./types/visual-plan.js";
@@ -25,5 +26,5 @@ export { createLogger } from "./utils/logger.js";
 export { hashUrl } from "./utils/hash.js";
 export { withPipelineRetry } from "./utils/retry.js";
 export { readStdin } from "./utils/stdin.js";
-export { ensureDir } from "./utils/files.js";
+export { ensureDir, jobAssetDir } from "./utils/files.js";
 export { msToFrames, secondsToFrames, framesToMs } from "./utils/timing.js";
