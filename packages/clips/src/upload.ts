@@ -1,24 +1,33 @@
 /**
- * upload.ts — Upload rendered shorts to YouTube.
+ * upload.ts — Prepare rendered shorts for distribution to YouTube, TikTok, and Instagram.
+ *
+ * Default mode generates manual upload packages with videos, captions, and instructions.
+ * API uploads are available behind --api-upload flag for future automated workflows.
  *
  * Usage:
- *   npx tsx packages/clips/src/upload.ts --stream <id>                # Upload all shorts
- *   npx tsx packages/clips/src/upload.ts --stream <id> --clips 1,3    # Upload specific clips
- *   npx tsx packages/clips/src/upload.ts --stream <id> --dry-run      # Show what would upload
- *   npx tsx packages/clips/src/upload.ts --auth                       # Just authenticate (setup)
+ *   npx tsx packages/clips/src/upload.ts --stream <id>                          # All platforms, manual packages
+ *   npx tsx packages/clips/src/upload.ts --stream <id> --platform youtube       # YouTube only
+ *   npx tsx packages/clips/src/upload.ts --stream <id> --platform tiktok        # TikTok only
+ *   npx tsx packages/clips/src/upload.ts --stream <id> --clips 1,3              # Specific clips only
+ *   npx tsx packages/clips/src/upload.ts --stream <id> --dry-run                # Preview without writing
+ *   npx tsx packages/clips/src/upload.ts --stream <id> --api-upload             # Use API upload (when configured)
+ *   npx tsx packages/clips/src/upload.ts --auth                                 # YouTube OAuth setup (for future API use)
  *
- * Requires:
- *   - data/client_secret.json (Google OAuth desktop credentials)
- *   - First run opens browser for OAuth consent, saves token to data/youtube_token.json
+ * API upload requirements (only with --api-upload):
+ *   - YouTube: data/client_secret.json (Google OAuth desktop credentials)
+ *   - TikTok: TIKTOK_ACCESS_TOKEN env var (Content Posting API, requires app review)
+ *   - Instagram: IG_ACCESS_TOKEN + IG_USER_ID env vars (Graph API, requires business account)
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, copyFileSync } from "fs";
 import { join, basename } from "path";
 import { createInterface } from "readline";
 import { createLogger, DATA_DIR } from "@ltx/shared";
 import { loadManifest, findStreamDir } from "./lib/manifest.js";
-import { google } from "googleapis";
-import { OAuth2Client } from "google-auth-library";
+import { google, Auth } from "googleapis";
+
+type Platform = "youtube" | "tiktok" | "instagram";
+const ALL_PLATFORMS: Platform[] = ["youtube", "tiktok", "instagram"];
 
 const log = createLogger("upload");
 
@@ -44,11 +53,13 @@ interface UploadArgs {
   all: boolean;
   dryRun: boolean;
   authOnly: boolean;
+  apiUpload: boolean;
+  platforms: Platform[];
 }
 
 function parseArgs(): UploadArgs {
   const args = process.argv.slice(2);
-  const result: UploadArgs = { clips: [], all: true, dryRun: false, authOnly: false };
+  const result: UploadArgs = { clips: [], all: true, dryRun: false, authOnly: false, apiUpload: false, platforms: [...ALL_PLATFORMS] };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--stream" && args[i + 1]) {
@@ -56,6 +67,15 @@ function parseArgs(): UploadArgs {
     } else if (args[i] === "--clips" && args[i + 1]) {
       result.clips = args[++i].split(",").map(Number);
       result.all = false;
+    } else if (args[i] === "--platform" && args[i + 1]) {
+      const val = args[++i].toLowerCase();
+      if (val === "all") {
+        result.platforms = [...ALL_PLATFORMS];
+      } else {
+        result.platforms = val.split(",").map((p) => p.trim()) as Platform[];
+      }
+    } else if (args[i] === "--api-upload") {
+      result.apiUpload = true;
     } else if (args[i] === "--dry-run") {
       result.dryRun = true;
     } else if (args[i] === "--auth") {
@@ -78,7 +98,7 @@ function prompt(question: string): Promise<string> {
 }
 
 /** Load OAuth2 client from client_secret.json */
-function loadOAuth2Client(): OAuth2Client {
+function loadOAuth2Client(): InstanceType<typeof google.auth.OAuth2> {
   if (!existsSync(CLIENT_SECRET_PATH)) {
     throw new Error(`Missing ${CLIENT_SECRET_PATH}. Download OAuth desktop credentials from Google Cloud Console.`);
   }
@@ -87,7 +107,7 @@ function loadOAuth2Client(): OAuth2Client {
   const creds = raw.installed || raw.web;
   if (!creds) throw new Error("Invalid client_secret.json format");
 
-  return new OAuth2Client(
+  return new google.auth.OAuth2(
     creds.client_id,
     creds.client_secret,
     creds.redirect_uris?.[0] || "http://localhost",
@@ -95,7 +115,7 @@ function loadOAuth2Client(): OAuth2Client {
 }
 
 /** Authenticate with YouTube API. Reuses saved token or initiates browser flow. */
-async function authenticate(): Promise<OAuth2Client> {
+async function authenticate(): Promise<InstanceType<typeof google.auth.OAuth2>> {
   const oauth2 = loadOAuth2Client();
 
   // Try to reuse existing token
@@ -106,9 +126,9 @@ async function authenticate(): Promise<OAuth2Client> {
     // Refresh if expired
     if (token.expiry_date && Date.now() >= token.expiry_date - 60_000) {
       log.info("Token expired, refreshing...");
-      const { credentials } = await oauth2.refreshAccessToken();
-      oauth2.setCredentials(credentials);
-      writeFileSync(TOKEN_PATH, JSON.stringify(credentials, null, 2), "utf-8");
+      const res = await oauth2.refreshAccessToken();
+      oauth2.setCredentials(res.credentials);
+      writeFileSync(TOKEN_PATH, JSON.stringify(res.credentials, null, 2), "utf-8");
       log.info("Token refreshed and saved.");
     }
 
@@ -252,6 +272,284 @@ async function uploadToYouTube(
   return videoId;
 }
 
+// ─── TikTok Content Posting API ───────────────────────────────────────────────
+
+/**
+ * Upload a video to TikTok via Content Posting API.
+ * Requires TIKTOK_ACCESS_TOKEN env var.
+ * API docs: https://developers.tiktok.com/doc/content-posting-api-get-started
+ *
+ * Flow: init upload → upload video file → publish
+ */
+async function uploadToTikTok(
+  videoPath: string,
+  meta: ClipMeta,
+): Promise<string> {
+  const token = process.env.TIKTOK_ACCESS_TOKEN;
+  if (!token) throw new Error("TIKTOK_ACCESS_TOKEN not set");
+
+  const fileSize = statSync(videoPath).size;
+  log.info(`[TikTok] Uploading ${basename(videoPath)} (${(fileSize / 1024 / 1024).toFixed(1)} MB)...`);
+
+  // Step 1: Initialize upload
+  const initRes = await fetch("https://open.tiktokapis.com/v2/post/publish/inbox/video/init/", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=UTF-8",
+    },
+    body: JSON.stringify({
+      post_info: {
+        title: meta.tiktokCaption,
+        privacy_level: "SELF_ONLY", // Start as private for QA
+        disable_duet: false,
+        disable_stitch: false,
+        disable_comment: false,
+      },
+      source_info: {
+        source: "FILE_UPLOAD",
+        video_size: fileSize,
+        chunk_size: fileSize, // Single chunk for shorts (< 60s)
+        total_chunk_count: 1,
+      },
+    }),
+  });
+
+  if (!initRes.ok) {
+    const errBody = await initRes.text();
+    throw new Error(`TikTok init failed (${initRes.status}): ${errBody}`);
+  }
+
+  const initData = (await initRes.json()) as { data: { publish_id: string; upload_url: string } };
+  const { publish_id, upload_url } = initData.data;
+
+  // Step 2: Upload video binary
+  const videoBuffer = readFileSync(videoPath);
+  const uploadRes = await fetch(upload_url, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "video/mp4",
+      "Content-Range": `bytes 0-${fileSize - 1}/${fileSize}`,
+    },
+    body: videoBuffer,
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error(`TikTok upload failed (${uploadRes.status}): ${await uploadRes.text()}`);
+  }
+
+  log.info(`  [TikTok] Uploaded: publish_id=${publish_id} (private/inbox)`);
+  return publish_id;
+}
+
+// ─── Instagram Graph API (Reels) ─────────────────────────────────────────────
+
+/**
+ * Upload a video to Instagram as a Reel via Graph API.
+ * Requires IG_ACCESS_TOKEN and IG_USER_ID env vars.
+ * API docs: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/content-publishing
+ *
+ * Flow: create media container (with video URL) → poll until ready → publish
+ * Note: Instagram requires a publicly accessible video URL, so for local files
+ * we'd need a temporary hosting step. This implementation assumes the video
+ * is accessible via a URL (e.g., uploaded to a CDN or temp host first).
+ */
+async function uploadToInstagram(
+  videoPath: string,
+  meta: ClipMeta,
+): Promise<string> {
+  const token = process.env.IG_ACCESS_TOKEN;
+  const userId = process.env.IG_USER_ID;
+  if (!token || !userId) throw new Error("IG_ACCESS_TOKEN and IG_USER_ID must be set");
+
+  const fileSize = statSync(videoPath).size;
+  log.info(`[Instagram] Uploading ${basename(videoPath)} (${(fileSize / 1024 / 1024).toFixed(1)} MB)...`);
+
+  // Instagram Graph API requires a publicly accessible video URL.
+  // Check for a pre-uploaded URL in IG_VIDEO_HOST_URL, or fall back to manual package.
+  const videoHostBase = process.env.IG_VIDEO_HOST_URL;
+  if (!videoHostBase) {
+    throw new Error(
+      "IG_VIDEO_HOST_URL not set. Instagram requires a publicly accessible video URL. " +
+      "Upload videos to a CDN first, or use the manual upload package."
+    );
+  }
+
+  const videoUrl = `${videoHostBase}/${basename(videoPath)}`;
+
+  // Step 1: Create media container
+  const containerRes = await fetch(
+    `https://graph.instagram.com/v21.0/${userId}/media`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        media_type: "REELS",
+        video_url: videoUrl,
+        caption: meta.reelsCaption,
+        share_to_feed: true,
+        access_token: token,
+      }),
+    },
+  );
+
+  if (!containerRes.ok) {
+    throw new Error(`Instagram container creation failed (${containerRes.status}): ${await containerRes.text()}`);
+  }
+
+  const containerData = (await containerRes.json()) as { id: string };
+  const containerId = containerData.id;
+
+  // Step 2: Poll for media container status (Instagram processes the video async)
+  log.info(`  [Instagram] Media container created: ${containerId}. Waiting for processing...`);
+  let ready = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise((r) => setTimeout(r, 5000)); // 5s poll interval
+
+    const statusRes = await fetch(
+      `https://graph.instagram.com/v21.0/${containerId}?fields=status_code&access_token=${token}`,
+    );
+    const statusData = (await statusRes.json()) as { status_code: string };
+
+    if (statusData.status_code === "FINISHED") {
+      ready = true;
+      break;
+    }
+    if (statusData.status_code === "ERROR") {
+      throw new Error("Instagram media processing failed");
+    }
+  }
+
+  if (!ready) throw new Error("Instagram media processing timed out after 150s");
+
+  // Step 3: Publish
+  const publishRes = await fetch(
+    `https://graph.instagram.com/v21.0/${userId}/media_publish`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        creation_id: containerId,
+        access_token: token,
+      }),
+    },
+  );
+
+  if (!publishRes.ok) {
+    throw new Error(`Instagram publish failed (${publishRes.status}): ${await publishRes.text()}`);
+  }
+
+  const publishData = (await publishRes.json()) as { id: string };
+  log.info(`  [Instagram] Published Reel: ${publishData.id}`);
+  return publishData.id;
+}
+
+// ─── Manual Upload Package Generator ─────────────────────────────────────────
+
+/**
+ * Generate a ready-to-upload package for manual distribution.
+ * Creates {jobDir}/distribute/{platform}/ with video copies and metadata files.
+ */
+function generateManualPackage(
+  platform: Platform,
+  jobDir: string,
+  uploadPlan: Array<{ meta: ClipMeta; videoPath: string }>,
+): void {
+  const distDir = join(jobDir, "distribute", platform);
+  mkdirSync(distDir, { recursive: true });
+
+  const instructions: string[] = [];
+  instructions.push(`# ${platform.charAt(0).toUpperCase() + platform.slice(1)} Upload Package`);
+  instructions.push(`Generated: ${new Date().toISOString()}\n`);
+
+  if (platform === "youtube") {
+    instructions.push("## How to upload to YouTube Shorts");
+    instructions.push("1. Go to https://studio.youtube.com/ → Create → Upload videos");
+    instructions.push("2. Upload each .mp4 file (they are already 9:16 Shorts format)");
+    instructions.push("3. For each video, copy the title and description from the matching .txt file");
+    instructions.push("4. Set Category to Gaming");
+    instructions.push("5. Add the tags listed in each clip's metadata file");
+    instructions.push("6. Set visibility: upload as Unlisted or Private, then schedule or publish when ready");
+    instructions.push("7. Tip: upload 1-3 clips per day for best algorithm engagement\n");
+  } else if (platform === "tiktok") {
+    instructions.push("## How to upload to TikTok");
+    instructions.push("1. Open TikTok app or tiktok.com/upload");
+    instructions.push("2. For each video below, upload the .mp4 file");
+    instructions.push("3. Copy the caption from the corresponding .txt file");
+    instructions.push("4. Set visibility to public when ready\n");
+  } else if (platform === "instagram") {
+    instructions.push("## How to upload to Instagram Reels");
+    instructions.push("1. Open Instagram app → Create → Reel");
+    instructions.push("2. For each video below, upload the .mp4 file");
+    instructions.push("3. Copy the caption from the corresponding .txt file");
+    instructions.push("4. Post as Reel\n");
+  }
+
+  instructions.push("## Clips\n");
+
+  for (const { meta, videoPath } of uploadPlan) {
+    const padded = String(meta.clipNum).padStart(2, "0");
+    const vidName = `${padded}-${meta.slug.replace(/[^a-z0-9-]/gi, "-").toLowerCase()}.mp4`;
+    const metaName = `${padded}-metadata.txt`;
+
+    // Copy video (symlink-safe: only copy if not already there)
+    const destVideo = join(distDir, vidName);
+    if (!existsSync(destVideo)) {
+      copyFileSync(videoPath, destVideo);
+    }
+
+    // Write platform-specific metadata file
+    let metaContent: string;
+    if (platform === "youtube") {
+      metaContent = [
+        `TITLE: ${meta.ytTitle}`,
+        "",
+        "DESCRIPTION:",
+        meta.ytDescription,
+        "",
+        `TAGS: ${meta.ytTags.join(", ")}`,
+        "",
+        "CATEGORY: Gaming",
+        "VISIBILITY: Private (set to Public when ready)",
+      ].join("\n");
+    } else if (platform === "tiktok") {
+      metaContent = `CAPTION:\n${meta.tiktokCaption}`;
+    } else {
+      metaContent = `CAPTION:\n${meta.reelsCaption}`;
+    }
+
+    writeFileSync(join(distDir, metaName), metaContent, "utf-8");
+
+    instructions.push(`### Clip ${meta.clipNum}: ${meta.slug}`);
+    instructions.push(`- Video: \`${vidName}\``);
+    instructions.push(`- Metadata: \`${metaName}\``);
+    if (platform === "youtube") {
+      instructions.push(`- Title: ${meta.ytTitle}`);
+    } else {
+      const caption = platform === "tiktok" ? meta.tiktokCaption : meta.reelsCaption;
+      instructions.push(`- Caption: ${caption}`);
+    }
+    instructions.push("");
+  }
+
+  writeFileSync(join(distDir, "README.md"), instructions.join("\n"), "utf-8");
+  log.info(`  [${platform}] Manual upload package → ${distDir}`);
+}
+
+// ─── Platform Availability Checks ────────────────────────────────────────────
+
+function hasTikTokCredentials(): boolean {
+  return !!process.env.TIKTOK_ACCESS_TOKEN;
+}
+
+function hasInstagramCredentials(): boolean {
+  return !!process.env.IG_ACCESS_TOKEN && !!process.env.IG_USER_ID;
+}
+
+function hasYouTubeCredentials(): boolean {
+  return existsSync(CLIENT_SECRET_PATH);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
 
@@ -263,7 +561,7 @@ async function main(): Promise<void> {
   }
 
   if (!args.streamId) {
-    log.error("Usage: npx tsx packages/clips/src/upload.ts --stream <id> [--clips 1,2] [--dry-run]");
+    log.error("Usage: npx tsx packages/clips/src/upload.ts --stream <id> [--platform youtube|tiktok|instagram|all] [--clips 1,2] [--dry-run]");
     process.exit(1);
   }
 
@@ -304,7 +602,7 @@ async function main(): Promise<void> {
     uploadPlan.push({ meta: clip, videoPath });
   }
 
-  log.info(`\nUpload plan: ${uploadPlan.length} clips to YouTube`);
+  log.info(`\nUpload plan: ${uploadPlan.length} clips → [${args.platforms.join(", ")}]`);
   log.info(`  Job: ${basename(jobDir)}`);
   log.info(`  Stream: ${manifest.title}\n`);
 
@@ -313,57 +611,159 @@ async function main(): Promise<void> {
     log.info(`  ${String(meta.clipNum).padStart(2, "0")}. "${meta.ytTitle}" (${size} MB)`);
   }
 
+  log.info(`\nMode: ${args.apiUpload ? "API upload" : "manual upload packages"}`);
+  log.info(`Platforms: [${args.platforms.join(", ")}]`);
+
   if (args.dryRun) {
-    log.info("\n[DRY RUN] No uploads performed.");
+    log.info("\n[DRY RUN] No packages generated.");
+    for (const platform of args.platforms) {
+      if (args.apiUpload) {
+        const hasCredentials =
+          (platform === "youtube" && hasYouTubeCredentials()) ||
+          (platform === "tiktok" && hasTikTokCredentials()) ||
+          (platform === "instagram" && hasInstagramCredentials());
+        log.info(`[DRY RUN] ${platform}: ${hasCredentials ? "would upload via API" : "credentials missing → manual package"}`);
+      } else {
+        log.info(`[DRY RUN] ${platform}: would generate manual upload package`);
+      }
+    }
     return;
   }
 
-  // Authenticate and create YouTube client
-  const oauth2 = await authenticate();
-  const youtube = google.youtube({ version: "v3", auth: oauth2 });
+  // Track all upload results across platforms
+  const allResults: Array<{
+    clipNum: number;
+    platform: Platform;
+    id: string;
+    url: string;
+    method: "api" | "manual_package";
+    uploadedAt: string;
+    privacyStatus: string;
+  }> = [];
 
-  // Upload each clip
-  const results: Array<{ clipNum: number; videoId: string; title: string }> = [];
+  for (const platform of args.platforms) {
+    log.info(`\n${"─".repeat(40)}`);
+    log.info(`  ${platform.toUpperCase()}`);
+    log.info(`${"─".repeat(40)}`);
 
-  for (const { meta, videoPath } of uploadPlan) {
-    try {
-      const videoId = await uploadToYouTube(youtube, videoPath, meta);
-      results.push({ clipNum: meta.clipNum, videoId, title: meta.ytTitle });
-    } catch (err: any) {
-      log.error(`Failed to upload clip ${meta.clipNum}: ${err.message}`);
-      // Continue with remaining uploads
+    // Use API upload only when --api-upload flag is set AND credentials exist
+    const useApi = args.apiUpload && (
+      (platform === "youtube" && hasYouTubeCredentials()) ||
+      (platform === "tiktok" && hasTikTokCredentials()) ||
+      (platform === "instagram" && hasInstagramCredentials())
+    );
+
+    if (useApi) {
+      // ─── API Upload Path (opt-in via --api-upload) ─────────────────────
+      if (platform === "youtube") {
+        const oauth2 = await authenticate();
+        const youtube = google.youtube({ version: "v3", auth: oauth2 });
+        for (const { meta, videoPath } of uploadPlan) {
+          try {
+            const videoId = await uploadToYouTube(youtube, videoPath, meta);
+            allResults.push({
+              clipNum: meta.clipNum, platform: "youtube", id: videoId,
+              url: `https://youtube.com/shorts/${videoId}`, method: "api",
+              uploadedAt: new Date().toISOString(), privacyStatus: "private",
+            });
+          } catch (err: any) {
+            log.error(`[YouTube] Failed clip ${meta.clipNum}: ${err.message}`);
+          }
+        }
+      } else if (platform === "tiktok") {
+        for (const { meta, videoPath } of uploadPlan) {
+          try {
+            const publishId = await uploadToTikTok(videoPath, meta);
+            allResults.push({
+              clipNum: meta.clipNum, platform: "tiktok", id: publishId,
+              url: `https://tiktok.com/@daily.peanut.clip`, method: "api",
+              uploadedAt: new Date().toISOString(), privacyStatus: "self_only",
+            });
+          } catch (err: any) {
+            log.error(`[TikTok] Failed clip ${meta.clipNum}: ${err.message}`);
+          }
+        }
+      } else if (platform === "instagram") {
+        for (const { meta, videoPath } of uploadPlan) {
+          try {
+            const mediaId = await uploadToInstagram(videoPath, meta);
+            allResults.push({
+              clipNum: meta.clipNum, platform: "instagram", id: mediaId,
+              url: `https://instagram.com/dailypeanutclipsandhighlights/`, method: "api",
+              uploadedAt: new Date().toISOString(), privacyStatus: "published",
+            });
+          } catch (err: any) {
+            log.error(`[Instagram] Failed clip ${meta.clipNum}: ${err.message}`);
+          }
+        }
+      }
+    } else {
+      // ─── Manual Upload Package (default) ───────────────────────────────
+      if (args.apiUpload) {
+        log.info(`[${platform}] --api-upload requested but credentials missing. Falling back to manual package.`);
+      }
+      generateManualPackage(platform, jobDir, uploadPlan);
+      for (const { meta } of uploadPlan) {
+        allResults.push({
+          clipNum: meta.clipNum, platform, id: "manual",
+          url: join(jobDir, "distribute", platform), method: "manual_package",
+          uploadedAt: new Date().toISOString(), privacyStatus: "pending_manual_upload",
+        });
+      }
     }
   }
 
-  // Summary
+  // ─── Summary ─────────────────────────────────────────────────────────────
   log.info(`\n${"=".repeat(60)}`);
-  log.info("  UPLOAD COMPLETE");
+  log.info("  DISTRIBUTION COMPLETE");
   log.info(`${"=".repeat(60)}\n`);
 
-  log.info(`Uploaded: ${results.length}/${uploadPlan.length} clips\n`);
+  const apiUploads = allResults.filter((r) => r.method === "api");
+  const manualPackages = allResults.filter((r) => r.method === "manual_package");
 
-  for (const r of results) {
-    log.info(`  ${String(r.clipNum).padStart(2, "0")}. ${r.title}`);
-    log.info(`      https://youtube.com/shorts/${r.videoId}`);
+  if (apiUploads.length > 0) {
+    log.info(`API uploads: ${apiUploads.length}`);
+    for (const r of apiUploads) {
+      log.info(`  [${r.platform}] Clip ${String(r.clipNum).padStart(2, "0")}: ${r.url}`);
+    }
   }
 
-  if (results.length > 0) {
-    log.info("\nAll clips uploaded as PRIVATE. Review in YouTube Studio, then set to public.");
-    log.info("YouTube Studio: https://studio.youtube.com/");
+  if (manualPackages.length > 0) {
+    const platforms = [...new Set(manualPackages.map((r) => r.platform))];
+    log.info(`\nManual upload packages generated for: ${platforms.join(", ")}`);
+    for (const p of platforms) {
+      log.info(`  ${join(jobDir, "distribute", p)}/`);
+    }
+    log.info("See README.md in each folder for upload instructions.");
   }
 
-  // Save upload results to job dir
-  const uploadLog = results.map((r) => ({
-    clipNum: r.clipNum,
-    platform: "youtube",
-    videoId: r.videoId,
-    url: `https://youtube.com/shorts/${r.videoId}`,
-    uploadedAt: new Date().toISOString(),
-    privacyStatus: "private",
-  }));
+  const ytResults = apiUploads.filter((r) => r.platform === "youtube");
+  if (ytResults.length > 0) {
+    log.info("\nYouTube clips uploaded as PRIVATE. Review in YouTube Studio, then set to public.");
+  }
 
+  // Save upload results to job dir (merge with existing log if present)
   const uploadLogPath = join(jobDir, "upload-log.json");
-  writeFileSync(uploadLogPath, JSON.stringify(uploadLog, null, 2), "utf-8");
+  let existingLog: typeof allResults = [];
+  if (existsSync(uploadLogPath)) {
+    try {
+      existingLog = JSON.parse(readFileSync(uploadLogPath, "utf-8"));
+    } catch { /* start fresh */ }
+  }
+
+  // Merge: replace entries for same clip+platform, append new ones
+  for (const result of allResults) {
+    const idx = existingLog.findIndex(
+      (e) => e.clipNum === result.clipNum && e.platform === result.platform,
+    );
+    if (idx >= 0) {
+      existingLog[idx] = result;
+    } else {
+      existingLog.push(result);
+    }
+  }
+
+  writeFileSync(uploadLogPath, JSON.stringify(existingLog, null, 2), "utf-8");
   log.info(`\nUpload log saved to ${uploadLogPath}`);
 }
 

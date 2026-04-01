@@ -166,14 +166,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 4: Upload to YouTube
+  // Step 4: Generate manual upload packages for all platforms
   if (startIdx <= 3 && streamId) {
     const uploadCmd = `${tsx} ${base}/upload.ts --stream ${streamId}`;
 
     if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${uploadCmd}`);
     } else {
-      run(uploadCmd, "Upload to YouTube");
+      run(uploadCmd, "Generate upload packages for YouTube, TikTok, Instagram");
     }
   }
 
@@ -191,7 +191,7 @@ async function main(): Promise<void> {
     }
   }
 
-  log.info("\nNext: review shorts and run upload when ready.");
+  log.info("\nNext: review shorts in each platform, then set to public.");
 }
 
 main().catch((err) => {
