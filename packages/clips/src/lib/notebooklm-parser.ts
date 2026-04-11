@@ -175,3 +175,172 @@ export function parseRunningBitsQuery(
 
   return picks;
 }
+
+/**
+ * Generic numbered-list parser for queries 3-6 (emotional-peaks, hot-takes,
+ * drama, one-liners). They all share the same output format:
+ *   N. **Title** * **Timestamp:** [HH:MM:SS] * **Hook:** ... * **Category:** ...
+ */
+function parseNumberedListQuery(
+  raw: RawQueryResponse,
+  sourceQuery: SourceQuery,
+  defaultCategory: string,
+): NotebookLMPick[] {
+  const answer = raw.value.answer;
+  const picks: NotebookLMPick[] = [];
+
+  const items = answer.split(/\n(?=\d{1,2}\.\s+\*)/);
+
+  for (const item of items) {
+    const tsMatch = item.match(TIMESTAMP_RE);
+    if (!tsMatch) continue;
+
+    const startSec = parseTimestampToSec(tsMatch[0]);
+    if (startSec < 0) continue;
+
+    const hookMatch = item.match(/\*\*Hook:?\*\*\s*([^\n]+)/i);
+    const titleMatch = item.match(/^\d+\.\s+\*\*([^*]+)\*\*/);
+    const hook = (hookMatch?.[1] ?? titleMatch?.[1] ?? "").trim();
+
+    const quoteMatch = item.match(/\*\*Quote:?\*\*\s*["\u201C]([^"\u201D]+)["\u201D]/);
+    const quote = quoteMatch?.[1].trim();
+
+    const setupMatch = item.match(/\*\*Setup(?:\s+Needed)?:?\*\*\s*(Yes|No)/i);
+    const setupNeeded = setupMatch ? setupMatch[1].toLowerCase() === "yes" : false;
+
+    picks.push({
+      startSec,
+      endSec: startSec + 45,
+      hook,
+      quote,
+      categories: [defaultCategory],
+      setupNeeded,
+      setupOffsetSec: 0,
+      strength: undefined,
+      sourceQuery,
+    });
+  }
+
+  // Position-based strength (top of list = strongest)
+  for (let i = 0; i < picks.length; i++) {
+    picks[i].strength = Math.max(3, 5 - Math.floor(i / 5));
+  }
+
+  return picks;
+}
+
+export function parseEmotionalPeaksQuery(
+  raw: RawQueryResponse,
+): NotebookLMPick[] {
+  return parseNumberedListQuery(raw, "emotional-peaks", "emotional-peak");
+}
+
+export function parseHotTakesQuery(raw: RawQueryResponse): NotebookLMPick[] {
+  return parseNumberedListQuery(raw, "hot-takes", "hot-take");
+}
+
+export function parseDramaQuery(raw: RawQueryResponse): NotebookLMPick[] {
+  return parseNumberedListQuery(raw, "drama", "drama");
+}
+
+export function parseOneLinersQuery(raw: RawQueryResponse): NotebookLMPick[] {
+  return parseNumberedListQuery(raw, "one-liners", "one-liner");
+}
+
+/**
+ * Parse query 7: single hero pick (story-of-the-stream).
+ */
+export function parseStoryOfStreamQuery(
+  raw: RawQueryResponse,
+): NotebookLMPick[] {
+  const answer = raw.value.answer;
+  const tsMatch = answer.match(TIMESTAMP_RE);
+  if (!tsMatch) return [];
+
+  const startSec = parseTimestampToSec(tsMatch[0]);
+  if (startSec < 0) return [];
+
+  const hookMatch = answer.match(/\*\*Hook:?\*\*\s*([^\n]+)/i);
+  const hook = hookMatch?.[1]?.trim() ?? "Story of the stream";
+
+  return [
+    {
+      startSec,
+      endSec: startSec + 60,
+      hook,
+      categories: ["story-of-stream"],
+      setupNeeded: false,
+      setupOffsetSec: 0,
+      strength: 5, // Hero pick always gets max strength
+      sourceQuery: "story-of-stream",
+    },
+  ];
+}
+
+/**
+ * Parse query 8 (enrichment): returns enrichment records keyed by the anchor
+ * timestamp of each candidate. Used to back-fill coldOpenSec/naturalEndSec/
+ * thumbnailSec/titleDrafts on picks from queries 1-7.
+ */
+export interface EnrichmentRecord {
+  anchorStartSec: number;
+  coldOpenSec?: number;
+  naturalEndSec?: number;
+  thumbnailSec?: number;
+  titleDrafts: string[];
+}
+
+export function parseEnrichmentQuery(
+  raw: RawQueryResponse,
+): EnrichmentRecord[] {
+  const answer = raw.value.answer;
+  const records: EnrichmentRecord[] = [];
+
+  // Each candidate is a numbered block starting with **N. [HH:MM:SS]**
+  const blocks = answer.split(/\n(?=\*\*\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/);
+
+  for (const block of blocks) {
+    const anchorMatch = block.match(
+      /\*\*\d+\.\s+\[(\d{2}):(\d{2}):(\d{2})\]/,
+    );
+    if (!anchorMatch) continue;
+    const anchorStartSec =
+      parseInt(anchorMatch[1], 10) * 3600 +
+      parseInt(anchorMatch[2], 10) * 60 +
+      parseInt(anchorMatch[3], 10);
+
+    const extractTs = (label: string): number | undefined => {
+      const re = new RegExp(`${label}:?\\s*\\[(\\d{2}):(\\d{2}):(\\d{2})\\]`, "i");
+      const m = block.match(re);
+      if (!m) return undefined;
+      return (
+        parseInt(m[1], 10) * 3600 +
+        parseInt(m[2], 10) * 60 +
+        parseInt(m[3], 10)
+      );
+    };
+
+    const titleDrafts: string[] = [];
+    // Look for "Title drafts:" or "Titles:" section followed by numbered list
+    const titleSectionMatch = block.match(
+      /Title (?:drafts|variants|options):?\s*\n((?:\s*\d+\.\s+[^\n]+\n?)+)/i,
+    );
+    if (titleSectionMatch) {
+      const lines = titleSectionMatch[1].split("\n");
+      for (const line of lines) {
+        const titleMatch = line.match(/\d+\.\s+(.+)/);
+        if (titleMatch) titleDrafts.push(titleMatch[1].trim());
+      }
+    }
+
+    records.push({
+      anchorStartSec,
+      coldOpenSec: extractTs("Cold open"),
+      naturalEndSec: extractTs("Natural end"),
+      thumbnailSec: extractTs("Thumbnail"),
+      titleDrafts: titleDrafts.slice(0, 3),
+    });
+  }
+
+  return records;
+}

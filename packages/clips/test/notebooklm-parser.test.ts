@@ -7,6 +7,12 @@ import {
   parseHumorQuery,
   parseRunningBitsQuery,
   parseTimestampToSec,
+  parseEmotionalPeaksQuery,
+  parseHotTakesQuery,
+  parseDramaQuery,
+  parseOneLinersQuery,
+  parseStoryOfStreamQuery,
+  parseEnrichmentQuery,
 } from "../src/lib/notebooklm-parser.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -82,4 +88,92 @@ test("parseRunningBitsQuery extracts bits from query 2 fixture", () => {
         Array.isArray(p.additionalTimestamps),
     );
   }
+});
+
+// Synthetic fixture matching the prompt's expected output format
+const SYNTHETIC_EMOTIONAL = {
+  value: {
+    answer: `Here are 5 emotional peak moments:
+
+1. **Rage: The 6767 Discovery**
+    *   **Timestamp:** [05:40:24]
+    *   **Hook:** When you realize everyone has your base code
+    *   **Emotion:** rage
+    *   **Setup Needed:** No
+
+2. **Triumph: Sniper Clutch**
+    *   **Timestamp:** [02:49:00]
+    *   **Hook:** One-shot across the map
+    *   **Emotion:** triumph
+    *   **Setup Needed:** No
+`,
+    conversation_id: "test",
+  },
+};
+
+test("parseEmotionalPeaksQuery extracts emotional moments", () => {
+  const picks = parseEmotionalPeaksQuery(SYNTHETIC_EMOTIONAL as any);
+  assert.equal(picks.length, 2);
+  assert.equal(picks[0].startSec, 5 * 3600 + 40 * 60 + 24);
+  assert.equal(picks[0].categories[0], "emotional-peak");
+  assert.equal(picks[0].sourceQuery, "emotional-peaks");
+});
+
+const SYNTHETIC_STORY = {
+  value: {
+    answer: `### The Story of the Stream
+
+**Timestamp:** [05:40:24]
+**Hook:** The slow-motion horror of Peanut realizing everyone knows his base code
+**Why this is THE moment:** This is the single biggest comedy beat of the stream.
+`,
+    conversation_id: "test",
+  },
+};
+
+test("parseStoryOfStreamQuery extracts single hero pick", () => {
+  const picks = parseStoryOfStreamQuery(SYNTHETIC_STORY as any);
+  assert.equal(picks.length, 1);
+  assert.equal(picks[0].startSec, 5 * 3600 + 40 * 60 + 24);
+  assert.equal(picks[0].categories[0], "story-of-stream");
+  assert.equal(picks[0].strength, 5); // Hero pick always max
+});
+
+const SYNTHETIC_ENRICHMENT = {
+  value: {
+    answer: `### Enrichment for candidates
+
+**1. [01:12:47] \u2014 30,000 Hour Berry Logic**
+- Cold open: [01:12:25]
+- Natural end: [01:14:16]
+- Thumbnail: [01:13:36]
+- Title drafts:
+  1. He Has 30,000 Hours And Can't Grow Berries
+  2. 4 Years Of Full-Time Berry Farming
+  3. The Math Got Him FUMING
+
+**2. [05:40:24] \u2014 6767 Security Breach**
+- Cold open: [05:40:18]
+- Natural end: [05:41:15]
+- Thumbnail: [05:40:40]
+- Title drafts:
+  1. Everyone Knew His Base Code
+  2. His "Secure" Base Was Using 6767
+  3. 5 Hours Later He Figured It Out
+`,
+    conversation_id: "test",
+  },
+};
+
+test("parseEnrichmentQuery extracts enrichment records", () => {
+  const records = parseEnrichmentQuery(SYNTHETIC_ENRICHMENT as any);
+  assert.equal(records.length, 2);
+
+  const first = records[0];
+  assert.equal(first.anchorStartSec, 4367); // 01:12:47
+  assert.equal(first.coldOpenSec, 4345); // 01:12:25
+  assert.equal(first.naturalEndSec, 4456); // 01:14:16
+  assert.equal(first.thumbnailSec, 4416); // 01:13:36
+  assert.equal(first.titleDrafts.length, 3);
+  assert.match(first.titleDrafts[0], /30,?000|Berr/);
 });
