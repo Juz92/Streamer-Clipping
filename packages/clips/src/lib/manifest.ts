@@ -14,7 +14,17 @@ export interface StreamManifest {
   chatPath: string | null;
   audioLevelsPath: string | null;
   momentsPath: string | null;
-  phase: "downloaded" | "analyzed" | "clipped" | "uploaded";
+  // NEW: NotebookLM review fields (all optional, backwards-compat)
+  notebookId?: string;
+  notebookSourceId?: string;
+  notebookLMReviewPath?: string;
+  notebookLMReviewedAt?: string;
+  phase:
+    | "downloaded"
+    | "analyzed"
+    | "notebooklm-reviewed"
+    | "clipped"
+    | "uploaded";
   createdAt: string;
   updatedAt: string;
 }
