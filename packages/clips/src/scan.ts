@@ -844,8 +844,11 @@ function displayUnifiedMoments(
     const m = moments[i];
     const rank = i + 1;
 
-    const sourceTag = m.source === "both" ? "MANUAL + AUTO" :
-                      m.source === "manual" ? "MANUAL" : "AUTO";
+    const sourceTag =
+      m.source === "both" ? "MULTI" :
+      m.source === "manual" ? "MANUAL" :
+      m.source === "notebooklm" ? "NLM" :
+      "AUTO";
     const score = m.viralityScore.toFixed(1);
     const startTime = formatTime(m.startSec);
     const endTime = formatTime(m.endSec);
