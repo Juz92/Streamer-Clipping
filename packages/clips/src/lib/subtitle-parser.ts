@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 
 export interface CaptionWord {
   word: string;
@@ -176,4 +176,45 @@ export function filterByTimeRange(
       startMs: w.startMs - startMs,
       endMs: w.endMs - startMs,
     }));
+}
+
+/**
+ * Convert a VTT subtitle file to a plain timestamped transcript file,
+ * one line per cue in `[HH:MM:SS] text` format. Returns the number of
+ * lines written. Used by the NotebookLM review module to produce the
+ * text source uploaded to NotebookLM.
+ */
+export function writeCleanTranscript(
+  vttPath: string,
+  outPath: string,
+): number {
+  const cues = parseVtt(vttPath);
+
+  const fmt = (ms: number): string => {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  };
+
+  const lines: string[] = [];
+  for (const cue of cues) {
+    const text = cue.text
+      .replace(/<\/?c(?:\.[^>]*)?>/g, "")
+      .replace(/<\d{2}:\d{2}:\d{2}\.\d{3}>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&gt;/g, ">")
+      .replace(/&lt;/g, "<")
+      .replace(/&amp;/g, "&")
+      .replace(/>>+/g, "")
+      .replace(/\[\s*__\s*\]/g, "****")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!text) continue;
+    lines.push(`[${fmt(cue.startMs)}] ${text}`);
+  }
+
+  writeFileSync(outPath, lines.join("\n"), "utf-8");
+  return lines.length;
 }
