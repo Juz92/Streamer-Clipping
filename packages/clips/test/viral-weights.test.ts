@@ -8,6 +8,7 @@ import {
   DURATION_PENALTY,
   STANDALONE_BONUS,
   LONG_SETUP_PENALTY,
+  LONG_SETUP_THRESHOLD_SEC,
   CROSS_CATEGORY_BONUS,
 } from "../src/lib/viral-weights.js";
 
@@ -57,5 +58,6 @@ test("modifiers are numeric", () => {
   assert.equal(typeof DURATION_PENALTY, "number");
   assert.equal(typeof STANDALONE_BONUS, "number");
   assert.equal(typeof LONG_SETUP_PENALTY, "number");
+  assert.equal(typeof LONG_SETUP_THRESHOLD_SEC, "number");
   assert.equal(typeof CROSS_CATEGORY_BONUS, "number");
 });
