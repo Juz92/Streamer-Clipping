@@ -14,10 +14,11 @@ import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { createLogger } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
+import { isNlmAvailable } from "./lib/notebooklm-client.js";
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "trim", "render", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "trim", "render", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface OrchestrateArgs {
@@ -26,11 +27,12 @@ interface OrchestrateArgs {
   from?: Step;
   top: number;
   dryRun: boolean;
+  skipNotebookLM: boolean;
 }
 
 function parseArgs(): OrchestrateArgs {
   const args = process.argv.slice(2);
-  const result: OrchestrateArgs = { top: 10, dryRun: false };
+  const result: OrchestrateArgs = { top: 10, dryRun: false, skipNotebookLM: false };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -43,6 +45,8 @@ function parseArgs(): OrchestrateArgs {
       result.top = parseInt(args[++i], 10);
     } else if (args[i] === "--dry-run") {
       result.dryRun = true;
+    } else if (args[i] === "--skip-notebooklm") {
+      result.skipNotebookLM = true;
     }
   }
 
@@ -79,8 +83,14 @@ function getStartStep(args: OrchestrateArgs): Step {
         if (manifest.phase === "uploaded") {
           return "upload"; // Already done, but re-run is safe
         }
-        if (manifest.phase === "analyzed" || manifest.phase === "clipped") {
+        if (manifest.phase === "clipped") {
           return "render";
+        }
+        if (manifest.phase === "notebooklm-reviewed") {
+          return "trim";
+        }
+        if (manifest.phase === "analyzed") {
+          return "notebooklm-review";
         }
         if (manifest.phase === "downloaded") {
           return "analyze";
@@ -144,8 +154,31 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 3: Interactive clip trimming (opens browser)
+  // Step 3: NotebookLM review (extract, score, enrich picks from transcript)
   if (startIdx <= 2 && streamId) {
+    if (args.skipNotebookLM) {
+      log.info("Skipping NotebookLM review (--skip-notebooklm)");
+    } else if (!isNlmAvailable()) {
+      log.warn("nlm CLI not available on PATH — skipping NotebookLM review");
+    } else {
+      const nlmCmd = `${tsx} ${base}/notebooklm-review.ts --stream ${streamId}`;
+
+      if (args.dryRun) {
+        log.info(`[DRY RUN] Would run: ${nlmCmd}`);
+      } else {
+        try {
+          run(nlmCmd, "NotebookLM review (humor, running bits, enrichment)");
+        } catch (e) {
+          log.warn(
+            `NotebookLM review failed: ${(e as Error).message}. Continuing with scorer-only picks.`,
+          );
+        }
+      }
+    }
+  }
+
+  // Step 4: Interactive clip trimming (opens browser)
+  if (startIdx <= 3 && streamId) {
     const trimCmd = `${tsx} ${base}/trim.ts --stream ${streamId}`;
 
     if (args.dryRun) {
@@ -156,8 +189,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 4: Render (produce 9:16 shorts)
-  if (startIdx <= 3 && streamId) {
+  // Step 5: Render (produce 9:16 shorts)
+  if (startIdx <= 4 && streamId) {
     const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --all`;
 
     if (args.dryRun) {
@@ -167,8 +200,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 5: Generate manual upload packages for all platforms
-  if (startIdx <= 4 && streamId) {
+  // Step 6: Generate manual upload packages for all platforms
+  if (startIdx <= 5 && streamId) {
     const uploadCmd = `${tsx} ${base}/upload.ts --stream ${streamId}`;
 
     if (args.dryRun) {
