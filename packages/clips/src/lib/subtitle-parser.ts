@@ -48,6 +48,12 @@ export function parseVtt(filePath: string): VttCue[] {
     const endMs = parseTimestamp(timingMatch[2]);
     i++;
 
+    // Skip near-zero-duration cues (rolling display artifacts in YouTube VTT)
+    if (endMs - startMs < 50) {
+      while (i < lines.length && lines[i].trim() !== "" && !lines[i].includes("-->")) i++;
+      continue;
+    }
+
     // Collect text lines until blank line or next timing line or NOTE block
     const textLines: string[] = [];
     while (i < lines.length) {
@@ -59,14 +65,24 @@ export function parseVtt(filePath: string): VttCue[] {
       i++;
     }
 
-    const text = textLines.join(" ").trim();
+    // For YouTube rolling VTT, multi-line cues have old text on first lines
+    // and new text (with inline timestamps) on the last line. Use only the
+    // line that contains inline timestamps, or the last line if none do.
+    let text: string;
+    const timestampedLines = textLines.filter((l) => /<\d{2}:\d{2}:\d{2}\.\d{3}>/.test(l));
+    if (timestampedLines.length > 0) {
+      text = timestampedLines[timestampedLines.length - 1].trim();
+    } else {
+      text = textLines[textLines.length - 1]?.trim() || "";
+    }
+
     if (!text) continue;
 
-    // Deduplication: skip if text is a substring of or identical to previous cue's text
+    // Deduplication: skip if cleaned text is a subset of previous cue
     if (cues.length > 0) {
       const prevText = cues[cues.length - 1].text;
-      // Strip inline timestamps for comparison
-      const clean = (s: string) => s.replace(/<\d{2}:\d{2}:\d{2}\.\d{3}>/g, "").trim();
+      const clean = (s: string) =>
+        s.replace(/<[^>]+>/g, "").replace(/&\w+;/g, " ").replace(/\s+/g, " ").trim();
       const cleanPrev = clean(prevText);
       const cleanCurr = clean(text);
       if (cleanCurr === cleanPrev || cleanPrev.includes(cleanCurr)) {
@@ -80,12 +96,27 @@ export function parseVtt(filePath: string): VttCue[] {
   return cues;
 }
 
+/**
+ * Strip VTT formatting tags and HTML entities from text.
+ */
+function stripVttTags(text: string): string {
+  return text
+    .replace(/<\/?c(?:\.[^>]*)?>/g, "") // <c>, </c>, <c.colorE5E5E5>
+    .replace(/&nbsp;/g, " ")
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&")
+    .replace(/>>+/g, "")   // speaker change markers
+    .replace(/\[\s*__\s*\]/g, "****") // censored words
+    .trim();
+}
+
 export function vttToWordTimestamps(cues: VttCue[]): CaptionWord[] {
   const words: CaptionWord[] = [];
 
   for (const cue of cues) {
     // Split text by inline timestamp tags to extract word+timestamp pairs
-    // Format: "word1<HH:MM:SS.mmm> word2<HH:MM:SS.mmm> word3"
+    // Format: "word1<HH:MM:SS.mmm><c> word2</c><HH:MM:SS.mmm><c> word3</c>"
     // The first word uses cue.startMs, subsequent words use inline timestamps
     const tagRegex = /<(\d{2}:\d{2}:\d{2}\.\d{3})>/g;
 
@@ -96,7 +127,7 @@ export function vttToWordTimestamps(cues: VttCue[]): CaptionWord[] {
     const wordEntries: { word: string; startMs: number }[] = [];
 
     // First part uses cue start
-    const firstWords = parts[0].trim();
+    const firstWords = stripVttTags(parts[0]);
     if (firstWords) {
       for (const w of firstWords.split(/\s+/)) {
         if (w) wordEntries.push({ word: w, startMs: cue.startMs });
@@ -106,7 +137,7 @@ export function vttToWordTimestamps(cues: VttCue[]): CaptionWord[] {
     // Remaining parts come in pairs: timestamp, text
     for (let j = 1; j < parts.length; j += 2) {
       const ts = parseTimestamp(parts[j]);
-      const chunk = (parts[j + 1] || "").trim();
+      const chunk = stripVttTags(parts[j + 1] || "");
       if (chunk) {
         const chunkWords = chunk.split(/\s+/);
         for (const w of chunkWords) {

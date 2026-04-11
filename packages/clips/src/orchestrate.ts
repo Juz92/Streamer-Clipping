@@ -17,7 +17,7 @@ import { findStreamDir, loadManifest } from "./lib/manifest.js";
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "render", "upload"] as const;
+const STEPS = ["discover", "analyze", "trim", "render", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface OrchestrateArgs {
@@ -144,19 +144,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 3: Render (produce 9:16 shorts)
+  // Step 3: Interactive clip trimming (opens browser)
   if (startIdx <= 2 && streamId) {
-    // First extract raw clips
-    const clipRange = Array.from({ length: args.top }, (_, i) => i + 1).join(",");
-    const clipCmd = `${tsx} ${base}/clip.ts --stream ${streamId} --moments ${clipRange}`;
+    const trimCmd = `${tsx} ${base}/trim.ts --stream ${streamId}`;
 
     if (args.dryRun) {
-      log.info(`[DRY RUN] Would run: ${clipCmd}`);
+      log.info(`[DRY RUN] Would run: ${trimCmd}`);
+      log.info(`[DRY RUN] Open http://localhost:3847 to trim clips`);
     } else {
-      run(clipCmd, "Extract raw clips");
+      run(trimCmd, "Interactive clip trimming (opens browser)");
     }
+  }
 
-    // Then render 9:16 shorts
+  // Step 4: Render (produce 9:16 shorts)
+  if (startIdx <= 3 && streamId) {
     const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --all`;
 
     if (args.dryRun) {
@@ -166,8 +167,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 4: Generate manual upload packages for all platforms
-  if (startIdx <= 3 && streamId) {
+  // Step 5: Generate manual upload packages for all platforms
+  if (startIdx <= 4 && streamId) {
     const uploadCmd = `${tsx} ${base}/upload.ts --stream ${streamId}`;
 
     if (args.dryRun) {
