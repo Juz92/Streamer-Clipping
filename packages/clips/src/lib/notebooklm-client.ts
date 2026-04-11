@@ -58,13 +58,18 @@ function runJson<T = unknown>(
   opts: { timeoutMs?: number } = {},
 ): T {
   const stdout = run(args, opts);
-  // Find the first `{` — nlm sometimes prints progress lines before JSON
-  const jsonStart = stdout.indexOf("{");
-  if (jsonStart < 0) {
+  // Find the first JSON structural char ({ for object or [ for array) —
+  // nlm sometimes prints progress lines before JSON, and `notebook list`
+  // returns an array while `notebook query --json` returns an object.
+  const braceIdx = stdout.indexOf("{");
+  const bracketIdx = stdout.indexOf("[");
+  const candidates = [braceIdx, bracketIdx].filter((i) => i >= 0);
+  if (candidates.length === 0) {
     throw new Error(
       `No JSON found in nlm output. First 200 chars: ${stdout.slice(0, 200)}`,
     );
   }
+  const jsonStart = Math.min(...candidates);
   const jsonStr = stdout.slice(jsonStart);
   try {
     return JSON.parse(jsonStr) as T;
