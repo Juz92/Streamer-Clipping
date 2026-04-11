@@ -235,11 +235,17 @@ async function main(): Promise<void> {
       const enrichments = parseEnrichmentQuery(response);
 
       // Back-fill enrichment onto deduped picks
+      let matched = 0;
+      let unmatched = 0;
       for (const e of enrichments) {
         const pick = deduped.find(
           (p) => Math.abs(p.startSec - e.anchorStartSec) <= 30,
         );
-        if (!pick) continue;
+        if (!pick) {
+          unmatched++;
+          continue;
+        }
+        matched++;
         if (e.coldOpenSec) (pick as any).coldOpenSec = e.coldOpenSec;
         if (e.naturalEndSec) {
           (pick as any).naturalEndSec = e.naturalEndSec;
@@ -247,6 +253,12 @@ async function main(): Promise<void> {
         }
         if (e.thumbnailSec) (pick as any).thumbnailSec = e.thumbnailSec;
         if (e.titleDrafts.length) (pick as any).titleDrafts = e.titleDrafts;
+      }
+      log.info(`Enrichment: ${matched} matched, ${unmatched} unmatched`);
+      if (unmatched > 0) {
+        log.warn(
+          `${unmatched} enrichment records could not be matched to picks (NotebookLM drifted > 30s from anchor). These picks will render with default coldOpen/naturalEnd/thumbnail.`,
+        );
       }
     } catch (e) {
       log.warn(`Enrichment query failed: ${(e as Error).message}. Proceeding with picks as-is.`);
