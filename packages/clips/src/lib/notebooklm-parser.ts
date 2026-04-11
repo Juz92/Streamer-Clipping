@@ -344,3 +344,79 @@ export function parseEnrichmentQuery(
 
   return records;
 }
+
+/**
+ * Extended pick with aggregated metadata populated during dedup.
+ */
+export interface DedupedPick extends NotebookLMPick {
+  /** Number of distinct source queries this pick was surfaced in. */
+  categoryQueryHitCount: number;
+  /** All source queries that surfaced this pick (for provenance). */
+  sourceQueries: SourceQuery[];
+}
+
+const OVERLAP_THRESHOLD_SEC = 30;
+
+/**
+ * Deduplicate picks across multiple query results. Two picks are considered
+ * the same moment if their `startSec` values are within OVERLAP_THRESHOLD_SEC
+ * of each other. Merged picks combine categories, tally source queries, and
+ * keep the earliest start + highest strength + longest hook.
+ */
+export function dedupePicks(picks: NotebookLMPick[]): DedupedPick[] {
+  // Sort by startSec so we process earliest first
+  const sorted = [...picks].sort((a, b) => a.startSec - b.startSec);
+  const result: DedupedPick[] = [];
+
+  for (const pick of sorted) {
+    const existing = result.find(
+      (r) => Math.abs(r.startSec - pick.startSec) <= OVERLAP_THRESHOLD_SEC,
+    );
+
+    if (!existing) {
+      result.push({
+        ...pick,
+        categoryQueryHitCount: 1,
+        sourceQueries: [pick.sourceQuery],
+      });
+      continue;
+    }
+
+    // Merge into existing
+    for (const cat of pick.categories) {
+      if (!existing.categories.includes(cat)) existing.categories.push(cat);
+    }
+    if (!existing.sourceQueries.includes(pick.sourceQuery)) {
+      existing.sourceQueries.push(pick.sourceQuery);
+      existing.categoryQueryHitCount = existing.sourceQueries.length;
+    }
+
+    // Earliest start wins
+    if (pick.startSec < existing.startSec) existing.startSec = pick.startSec;
+    if (pick.endSec > existing.endSec) existing.endSec = pick.endSec;
+
+    // Strongest strength wins
+    if ((pick.strength ?? 0) > (existing.strength ?? 0)) {
+      existing.strength = pick.strength;
+    }
+
+    // Longer hook wins (usually more descriptive)
+    if (pick.hook.length > existing.hook.length) existing.hook = pick.hook;
+
+    // Preserve quote if we don't have one
+    if (!existing.quote && pick.quote) existing.quote = pick.quote;
+
+    // Preserve additionalTimestamps from any source
+    if (pick.additionalTimestamps && !existing.additionalTimestamps) {
+      existing.additionalTimestamps = pick.additionalTimestamps;
+    }
+
+    // Stronger setup info wins
+    if (pick.setupNeeded && !existing.setupNeeded) {
+      existing.setupNeeded = true;
+      existing.setupOffsetSec = pick.setupOffsetSec;
+    }
+  }
+
+  return result;
+}

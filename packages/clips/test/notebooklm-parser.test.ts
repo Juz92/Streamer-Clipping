@@ -13,7 +13,9 @@ import {
   parseOneLinersQuery,
   parseStoryOfStreamQuery,
   parseEnrichmentQuery,
+  dedupePicks,
 } from "../src/lib/notebooklm-parser.js";
+import type { NotebookLMPick } from "../src/lib/notebooklm-parser.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(__dirname, "fixtures");
@@ -176,4 +178,65 @@ test("parseEnrichmentQuery extracts enrichment records", () => {
   assert.equal(first.thumbnailSec, 4416); // 01:13:36
   assert.equal(first.titleDrafts.length, 3);
   assert.match(first.titleDrafts[0], /30,?000|Berr/);
+});
+
+function mkPick(overrides: Partial<NotebookLMPick>): NotebookLMPick {
+  return {
+    startSec: 100,
+    endSec: 145,
+    hook: "Test hook",
+    categories: ["dry-joke"],
+    setupNeeded: false,
+    setupOffsetSec: 0,
+    strength: 4,
+    sourceQuery: "humor",
+    ...overrides,
+  };
+}
+
+test("dedupePicks: picks within 30s overlap are merged", () => {
+  const picks = [
+    mkPick({ startSec: 100, categories: ["dry-joke"], sourceQuery: "humor" }),
+    mkPick({ startSec: 115, categories: ["hot-take"], sourceQuery: "hot-takes" }),
+  ];
+  const merged = dedupePicks(picks);
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0].categories.sort(), ["dry-joke", "hot-take"]);
+  assert.equal(merged[0].categoryQueryHitCount, 2);
+});
+
+test("dedupePicks: picks > 30s apart stay separate", () => {
+  const picks = [
+    mkPick({ startSec: 100 }),
+    mkPick({ startSec: 131 }),
+  ];
+  const merged = dedupePicks(picks);
+  assert.equal(merged.length, 2);
+});
+
+test("dedupePicks: merged pick keeps earliest start and highest strength", () => {
+  const picks = [
+    mkPick({ startSec: 110, strength: 3, hook: "later weaker" }),
+    mkPick({ startSec: 100, strength: 5, hook: "earlier stronger" }),
+  ];
+  const merged = dedupePicks(picks);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].startSec, 100);
+  assert.equal(merged[0].strength, 5);
+  assert.equal(merged[0].hook, "earlier stronger");
+});
+
+test("dedupePicks: preserves additionalTimestamps from running bits", () => {
+  const picks = [
+    mkPick({
+      startSec: 100,
+      categories: ["running-bit"],
+      sourceQuery: "running-bits",
+      additionalTimestamps: [50, 200, 300],
+    }),
+    mkPick({ startSec: 105, categories: ["dry-joke"], sourceQuery: "humor" }),
+  ];
+  const merged = dedupePicks(picks);
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0].additionalTimestamps, [50, 200, 300]);
 });
