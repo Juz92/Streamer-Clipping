@@ -910,6 +910,7 @@ async function main(): Promise<void> {
   let timelineQuery = "";
   let timelineContextSec = 15; // how many seconds of padding around each mention
   let timelineMaxSegments = 5; // cap segments to keep the Short watchable
+  let notebookLMPathArg: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--stream" && args[i + 1]) {
@@ -936,6 +937,8 @@ async function main(): Promise<void> {
       // marker, used with --merge
     } else if (args[i] === "--export") {
       exportMode = true;
+    } else if (args[i] === "--notebooklm" && args[i + 1]) {
+      notebookLMPathArg = args[++i];
     }
   }
 
@@ -967,16 +970,28 @@ async function main(): Promise<void> {
   }
 
   if (mergeMode) {
-    // Merge mode: read manual picks from stdin and merge with automated moments
+    // Merge mode: read manual picks from stdin and merge with automated + notebooklm moments
     const stdinData = await readStdin();
     const manualPicks: ManualPick[] = JSON.parse(stdinData);
 
-    const unified = mergeManualAndAutomated(manualPicks, moments);
+    // Auto-detect notebooklm-moments.json in the job folder unless overridden by --notebooklm
+    const notebookLMPath = notebookLMPathArg ?? join(streamDir, "notebooklm-moments.json");
+    let notebookLMPicks: NotebookLMPickForMerge[] = [];
+    if (existsSync(notebookLMPath)) {
+      notebookLMPicks = JSON.parse(readFileSync(notebookLMPath, "utf-8"));
+      log.info(`Loaded ${notebookLMPicks.length} NotebookLM picks from ${notebookLMPath}`);
+    } else {
+      log.info(`No NotebookLM picks found (looked at ${notebookLMPath})`);
+    }
+
+    const unified = mergeSources(manualPicks, moments, notebookLMPicks);
 
     const unifiedPath = join(streamDir, "unified-moments.json");
     writeFileSync(unifiedPath, JSON.stringify(unified, null, 2), "utf-8");
 
-    log.info(`Merged ${manualPicks.length} manual picks with ${moments.length} automated moments`);
+    log.info(
+      `Merged ${manualPicks.length} manual + ${moments.length} automated + ${notebookLMPicks.length} notebooklm moments`,
+    );
     log.info(`Saved ${unified.length} unified moments to ${unifiedPath}`);
 
     displayUnifiedMoments(unified);
