@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { fileURLToPath } from "url";
 import { createLogger, DATA_DIR, readStdin } from "@ltx/shared";
 import { getStreamDir, loadManifest } from "./lib/manifest.js";
 import { parseVtt, vttToWordTimestamps, CaptionWord } from "./lib/subtitle-parser.js";
@@ -16,7 +17,7 @@ interface ClipSegment {
 
 interface UnifiedMoment {
   id: string;
-  source: "manual" | "automated" | "both";
+  source: "manual" | "automated" | "notebooklm" | "both";
   startSec: number;
   endSec: number;
   durationSec: number;
@@ -32,6 +33,16 @@ interface UnifiedMoment {
     audioMagnitude: number;
     compositeScore: number;
   };
+  // NEW: NotebookLM enrichment fields (all optional)
+  categories?: string[];
+  coldOpenSec?: number;
+  naturalEndSec?: number;
+  thumbnailSec?: number;
+  titleDrafts?: string[];
+  setupNeeded?: boolean;
+  setupRef?: { startSec: number; description: string };
+  viralSubScores?: Record<string, number>;
+  notebooklmQuote?: string;
 }
 
 interface ManualPick {
@@ -612,6 +623,25 @@ function resolveSegments(pick: ManualPick): ClipSegment[] {
   return [];
 }
 
+export interface NotebookLMPickForMerge {
+  id: string;
+  startSec: number;
+  endSec: number;
+  description: string;
+  viralScore: number;
+  categories: string[];
+  hook: string;
+  durationSec: number;
+  setupNeeded: boolean;
+  setupRef?: { startSec: number; description: string };
+  coldOpenSec?: number;
+  naturalEndSec?: number;
+  thumbnailSec?: number;
+  titleDrafts?: string[];
+  quote?: string;
+  viralSubScores?: Record<string, number>;
+}
+
 function mergeManualAndAutomated(
   manualPicks: ManualPick[],
   automatedMoments: Moment[],
@@ -730,6 +760,73 @@ function mergeManualAndAutomated(
   }
 
   return unified;
+}
+
+/**
+ * Three-way merge: manual picks + automated moments + NotebookLM picks.
+ * Uses the existing manual+automated merger as pass 1, then folds NotebookLM
+ * picks in as pass 2 with the same 30-second overlap threshold.
+ *
+ * Precedence for conflicting fields: manual > automated > notebooklm for
+ * timing and description. NotebookLM wins for enrichment fields (categories,
+ * coldOpenSec, titleDrafts, thumbnailSec, naturalEndSec) since it's the only
+ * producer. Score reconciliation takes the MAX across all sources.
+ */
+export function mergeSources(
+  manualPicks: ManualPick[],
+  automatedMoments: Moment[],
+  notebookLMPicks: NotebookLMPickForMerge[],
+): UnifiedMoment[] {
+  // Pass 1: existing manual + automated merge
+  const pass1 = mergeManualAndAutomated(manualPicks, automatedMoments);
+
+  // Pass 2: fold in NotebookLM picks
+  const result: UnifiedMoment[] = [...pass1];
+
+  for (const nlm of notebookLMPicks) {
+    const overlap = result.find(
+      (u) => Math.abs(u.startSec - nlm.startSec) <= 30,
+    );
+
+    if (overlap) {
+      // Merge: upgrade source, take max score, fold enrichment
+      overlap.source = "both";
+      overlap.viralityScore = Math.max(overlap.viralityScore, nlm.viralScore);
+      overlap.categories = nlm.categories;
+      overlap.coldOpenSec = nlm.coldOpenSec;
+      overlap.naturalEndSec = nlm.naturalEndSec;
+      overlap.thumbnailSec = nlm.thumbnailSec;
+      overlap.titleDrafts = nlm.titleDrafts;
+      overlap.setupNeeded = nlm.setupNeeded;
+      overlap.setupRef = nlm.setupRef;
+      overlap.notebooklmQuote = nlm.quote;
+      overlap.viralSubScores = nlm.viralSubScores;
+    } else {
+      // New standalone NotebookLM pick
+      result.push({
+        id: `nlm-${String(result.length + 1).padStart(3, "0")}`,
+        source: "notebooklm",
+        startSec: nlm.startSec,
+        endSec: nlm.endSec,
+        durationSec: nlm.durationSec,
+        description: nlm.description || nlm.hook,
+        viralityScore: nlm.viralScore,
+        hookText: nlm.hook,
+        segments: [],
+        categories: nlm.categories,
+        coldOpenSec: nlm.coldOpenSec,
+        naturalEndSec: nlm.naturalEndSec,
+        thumbnailSec: nlm.thumbnailSec,
+        titleDrafts: nlm.titleDrafts,
+        setupNeeded: nlm.setupNeeded,
+        setupRef: nlm.setupRef,
+        notebooklmQuote: nlm.quote,
+        viralSubScores: nlm.viralSubScores,
+      });
+    }
+  }
+
+  return result;
 }
 
 function displayUnifiedMoments(
@@ -970,7 +1067,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  log.error(err.message);
-  process.exit(1);
-});
+// Only run CLI when this file is executed directly (not imported by tests)
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename || process.argv[1]?.endsWith("scan.ts") || process.argv[1]?.endsWith("scan.js")) {
+  main().catch((err) => {
+    log.error(err.message);
+    process.exit(1);
+  });
+}
