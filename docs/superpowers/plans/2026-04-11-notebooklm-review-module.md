@@ -2882,47 +2882,153 @@ git commit -m "feat(clips): add notebooklm-review entry point wiring all compone
 
 ---
 
-### Task 15: Add `notebooklm-review` phase to `orchestrate.ts` + end-to-end smoke test
+### Task 15: Add `notebooklm-review` step to `orchestrate.ts` + end-to-end smoke test
 
 **Files:**
 - Modify: `packages/clips/src/orchestrate.ts`
 
-- [ ] **Step 1: Read current orchestrate phases**
+**Important context for implementer:** `orchestrate.ts` currently uses `STEPS` (not `PHASES`), has `trim` at index 2 (not `scan`), and uses an `if (startIdx <= N && streamId)` pattern (not a switch/case dispatcher). The existing steps are `["discover", "analyze", "trim", "render", "upload"]` with each step running as an `execSync(run(cmd, label))`. The plan adjustments below reflect the real file — do NOT introduce a switch/case or rename to PHASES.
 
-Run: Read `packages/clips/src/orchestrate.ts` — find the PHASES constant or phase array.
+- [ ] **Step 1: Read current orchestrate.ts structure**
 
-- [ ] **Step 2: Add notebooklm-review phase**
+Run: Read `packages/clips/src/orchestrate.ts` fully to confirm STEPS array, `getStartStep` logic, and the sequential `if (startIdx <= N)` blocks.
 
-Find the phase list in `orchestrate.ts`. Add `"notebooklm-review"` between `"analyze"` and `"scan"` (or wherever the scan phase lives). Example (actual file may differ — adapt to real structure):
+- [ ] **Step 2: Update STEPS array and Step type**
+
+Edit `packages/clips/src/orchestrate.ts` line 20:
 
 ```typescript
-const PHASES = ["discover", "analyze", "notebooklm-review", "scan", "render", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "trim", "render", "upload"] as const;
+type Step = (typeof STEPS)[number];
 ```
 
-Where the orchestrator runs each phase (look for the switch/if chain), add a new branch:
+This inserts `notebooklm-review` between `analyze` (idx 1) and `trim` (new idx 3). All existing `if (startIdx <= N && streamId)` blocks with N >= 2 must shift their index up by one. Specifically:
+- `trim`: was `startIdx <= 2`, becomes `startIdx <= 3`
+- `render`: was `startIdx <= 3`, becomes `startIdx <= 4`
+- `upload`: was `startIdx <= 4`, becomes `startIdx <= 5`
+
+- [ ] **Step 3: Add import and `--skip-notebooklm` flag**
+
+At the top of `orchestrate.ts`, add the import (alongside existing `@ltx/shared` and manifest imports):
 
 ```typescript
-case "notebooklm-review": {
-  if (!isNlmAvailable()) {
-    log.warn("nlm CLI not available — skipping notebooklm-review phase");
-    break;
-  }
-  log.info("Running NotebookLM review...");
-  try {
-    execSync(
-      `npx tsx packages/clips/src/notebooklm-review.ts --stream ${streamId}`,
-      { stdio: "inherit" },
-    );
-  } catch (e) {
-    log.warn(`NotebookLM review failed: ${(e as Error).message}. Continuing with scorer-only picks.`);
-  }
-  break;
+import { isNlmAvailable } from "./lib/notebooklm-client.js";
+```
+
+Extend the `OrchestrateArgs` interface to include the skip flag:
+
+```typescript
+interface OrchestrateArgs {
+  url?: string;
+  streamId?: string;
+  from?: Step;
+  top: number;
+  dryRun: boolean;
+  skipNotebookLM: boolean;
 }
 ```
 
-Import `isNlmAvailable` from `./lib/notebooklm-client.js` at the top of orchestrate.ts.
+Update `parseArgs()` defaults and parsing (around line 33):
 
-Also add a `--skip-notebooklm` CLI flag to `parseArgs` in orchestrate.ts that, when set, removes `"notebooklm-review"` from the phase list.
+```typescript
+function parseArgs(): OrchestrateArgs {
+  const args = process.argv.slice(2);
+  const result: OrchestrateArgs = { top: 10, dryRun: false, skipNotebookLM: false };
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--url" && args[i + 1]) {
+      result.url = args[++i];
+    } else if (args[i] === "--stream" && args[i + 1]) {
+      result.streamId = args[++i];
+    } else if (args[i] === "--from" && args[i + 1]) {
+      result.from = args[++i] as Step;
+    } else if (args[i] === "--top" && args[i + 1]) {
+      result.top = parseInt(args[++i], 10);
+    } else if (args[i] === "--dry-run") {
+      result.dryRun = true;
+    } else if (args[i] === "--skip-notebooklm") {
+      result.skipNotebookLM = true;
+    }
+  }
+
+  return result;
+}
+```
+
+- [ ] **Step 4: Update `getStartStep` to handle the new phase**
+
+Find `getStartStep` (around line 70). Add handling for `"notebooklm-reviewed"` phase — if the stream has reached that phase, resume from `trim`:
+
+```typescript
+function getStartStep(args: OrchestrateArgs): Step {
+  if (args.from) return args.from;
+
+  if (args.streamId) {
+    const dir = findStreamDir(args.streamId);
+    if (dir) {
+      try {
+        const manifest = loadManifest(args.streamId);
+        if (manifest.phase === "uploaded") {
+          return "upload";
+        }
+        if (manifest.phase === "clipped") {
+          return "render";
+        }
+        if (manifest.phase === "notebooklm-reviewed") {
+          return "trim";
+        }
+        if (manifest.phase === "analyzed") {
+          return "notebooklm-review";
+        }
+        if (manifest.phase === "downloaded") {
+          return "analyze";
+        }
+      } catch {
+        // manifest not loadable, start from discover
+      }
+    }
+  }
+
+  return "discover";
+}
+```
+
+- [ ] **Step 5: Insert the new step block between analyze and trim**
+
+After the existing "Step 2: Analyze" block (which ends around line 145) and BEFORE the existing "Step 3: Interactive clip trimming" block, insert a new step block:
+
+```typescript
+  // Step 3: NotebookLM review (extract, score, enrich picks from transcript)
+  if (startIdx <= 2 && streamId) {
+    if (args.skipNotebookLM) {
+      log.info("Skipping NotebookLM review (--skip-notebooklm)");
+    } else if (!isNlmAvailable()) {
+      log.warn("nlm CLI not available on PATH — skipping NotebookLM review");
+    } else {
+      const nlmCmd = `${tsx} ${base}/notebooklm-review.ts --stream ${streamId}`;
+
+      if (args.dryRun) {
+        log.info(`[DRY RUN] Would run: ${nlmCmd}`);
+      } else {
+        try {
+          run(nlmCmd, "NotebookLM review (humor, running bits, enrichment)");
+        } catch (e) {
+          log.warn(
+            `NotebookLM review failed: ${(e as Error).message}. Continuing with scorer-only picks.`,
+          );
+        }
+      }
+    }
+  }
+```
+
+Then update the step-index comments and conditions on the later blocks:
+- Change existing `// Step 3: Interactive clip trimming` → `// Step 4: Interactive clip trimming`
+- Change its `if (startIdx <= 2 && streamId)` → `if (startIdx <= 3 && streamId)`
+- Change existing `// Step 4: Render` → `// Step 5: Render`
+- Change its `if (startIdx <= 3 && streamId)` → `if (startIdx <= 4 && streamId)`
+- Change existing `// Step 5: Generate manual upload packages` → `// Step 6: Generate manual upload packages`
+- Change its `if (startIdx <= 4 && streamId)` → `if (startIdx <= 5 && streamId)`
 
 - [ ] **Step 3: End-to-end smoke test on trial data**
 
