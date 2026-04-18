@@ -12,13 +12,15 @@
 
 import { execSync } from "child_process";
 import { existsSync } from "fs";
+import { join } from "path";
 import { createLogger } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
 import { isNlmAvailable } from "./lib/notebooklm-client.js";
+import { transcribeAllClips } from "./lib/whisper-captions.js";
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "notebooklm-review", "trim", "render", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "trim", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface OrchestrateArgs {
@@ -28,11 +30,19 @@ interface OrchestrateArgs {
   top: number;
   dryRun: boolean;
   skipNotebookLM: boolean;
+  interactiveTrim: boolean;
+  skipReview: boolean;
 }
 
 function parseArgs(): OrchestrateArgs {
   const args = process.argv.slice(2);
-  const result: OrchestrateArgs = { top: 10, dryRun: false, skipNotebookLM: false };
+  const result: OrchestrateArgs = {
+    top: 15,
+    dryRun: false,
+    skipNotebookLM: false,
+    interactiveTrim: false,
+    skipReview: false,
+  };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--url" && args[i + 1]) {
@@ -47,6 +57,10 @@ function parseArgs(): OrchestrateArgs {
       result.dryRun = true;
     } else if (args[i] === "--skip-notebooklm") {
       result.skipNotebookLM = true;
+    } else if (args[i] === "--interactive-trim") {
+      result.interactiveTrim = true;
+    } else if (args[i] === "--skip-review") {
+      result.skipReview = true;
     }
   }
 
@@ -81,10 +95,13 @@ function getStartStep(args: OrchestrateArgs): Step {
       try {
         const manifest = loadManifest(args.streamId);
         if (manifest.phase === "uploaded") {
-          return "upload"; // Already done, but re-run is safe
+          return "upload";
+        }
+        if (manifest.phase === "rendered") {
+          return "review";
         }
         if (manifest.phase === "clipped") {
-          return "render";
+          return "whisper-captions";
         }
         if (manifest.phase === "notebooklm-reviewed") {
           return "trim";
@@ -135,11 +152,16 @@ async function main(): Promise<void> {
     }
   }
 
-  // We need a stream ID for remaining steps
+  // We need a stream ID for remaining steps. When launched with --url the
+  // ID is right there in the query string; extract it so the rest of the
+  // pipeline doesn't need an explicit --stream.
   let streamId = args.streamId;
+  if (!streamId && args.url) {
+    const m = args.url.match(/[?&]v=([A-Za-z0-9_-]{6,})/);
+    if (m) streamId = m[1];
+  }
   if (!streamId && !args.dryRun) {
-    // Try to find the most recently created manifest
-    log.error("--stream <id> required for analyze/render steps when not starting from discover");
+    log.error("Could not resolve stream ID. Pass --stream <id> explicitly or use a --url that contains ?v=<id>");
     process.exit(1);
   }
 
@@ -161,7 +183,7 @@ async function main(): Promise<void> {
     } else if (!isNlmAvailable()) {
       log.warn("nlm CLI not available on PATH — skipping NotebookLM review");
     } else {
-      const nlmCmd = `${tsx} ${base}/notebooklm-review.ts --stream ${streamId}`;
+      const nlmCmd = `${tsx} ${base}/notebooklm-review.ts --stream ${streamId} --top ${args.top}`;
 
       if (args.dryRun) {
         log.info(`[DRY RUN] Would run: ${nlmCmd}`);
@@ -177,20 +199,50 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 4: Interactive clip trimming (opens browser)
+  // Step 4: Clip trimming — default is automated; --interactive-trim opens the browser.
   if (startIdx <= 3 && streamId) {
-    const trimCmd = `${tsx} ${base}/trim.ts --stream ${streamId}`;
-
-    if (args.dryRun) {
-      log.info(`[DRY RUN] Would run: ${trimCmd}`);
-      log.info(`[DRY RUN] Open http://localhost:3847 to trim clips`);
+    if (args.interactiveTrim) {
+      const trimCmd = `${tsx} ${base}/trim.ts --stream ${streamId}`;
+      if (args.dryRun) {
+        log.info(`[DRY RUN] Would run: ${trimCmd}`);
+        log.info(`[DRY RUN] Open http://localhost:3900 to trim clips`);
+      } else {
+        run(trimCmd, "Interactive clip trimming (opens browser)");
+      }
     } else {
-      run(trimCmd, "Interactive clip trimming (opens browser)");
+      const trimCmd = `${tsx} ${base}/trim.ts --stream ${streamId} --auto`;
+      if (args.dryRun) {
+        log.info(`[DRY RUN] Would run: ${trimCmd}`);
+      } else {
+        run(trimCmd, "Auto-trim clips (whisper + audio peaks, no browser)");
+      }
     }
   }
 
-  // Step 5: Render (produce 9:16 shorts)
+  // Step 5: Whisper caption generation (transcribe raw clips for accurate word timing)
   if (startIdx <= 4 && streamId) {
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would transcribe raw clips with faster-whisper`);
+    } else {
+      const { findStreamDir: findDir } = await import("./lib/manifest.js");
+      const dir = findDir(streamId);
+      if (dir) {
+        const rawClipsDir = join(dir, "raw-clips");
+        const whisperDir = join(dir, "whisper-captions");
+        if (existsSync(rawClipsDir)) {
+          log.info(`\n${"=".repeat(60)}`);
+          log.info(`  STEP: Whisper caption generation`);
+          log.info(`${"=".repeat(60)}\n`);
+          transcribeAllClips(rawClipsDir, whisperDir);
+        } else {
+          log.warn("No raw-clips/ directory found — skipping Whisper transcription");
+        }
+      }
+    }
+  }
+
+  // Step 6: Render (produce 9:16 shorts)
+  if (startIdx <= 5 && streamId) {
     const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --all`;
 
     if (args.dryRun) {
@@ -200,8 +252,59 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 6: Generate manual upload packages for all platforms
-  if (startIdx <= 5 && streamId) {
+  // Step 7: Gemini QA review + auto-fix for NEEDS_TRIM clips.
+  if (startIdx <= 6 && streamId) {
+    if (args.skipReview) {
+      log.info("Skipping Gemini review (--skip-review)");
+    } else if (!process.env.GEMINI_API_KEY) {
+      log.warn("GEMINI_API_KEY not set — skipping Gemini review step");
+    } else {
+      const reviewCmd = `${tsx} ${base}/review.ts --stream ${streamId}`;
+      if (args.dryRun) {
+        log.info(`[DRY RUN] Would run: ${reviewCmd}`);
+      } else {
+        try {
+          run(reviewCmd, "Gemini QA review + auto-fix");
+        } catch (e) {
+          log.warn(`Review step failed: ${(e as Error).message}. Continuing.`);
+        }
+      }
+    }
+  }
+
+  // Step 8: Generate thumbnails (YT + TikTok variants per clip).
+  if (startIdx <= 7 && streamId) {
+    const thumbsCmd = `${tsx} ${base}/generate-thumbnails.ts --stream ${streamId}`;
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${thumbsCmd}`);
+    } else {
+      try {
+        run(thumbsCmd, "Generate YT + TikTok thumbnails");
+      } catch (e) {
+        log.warn(`Thumbnail generation failed: ${(e as Error).message}. Continuing.`);
+      }
+    }
+  }
+
+  // Step 9: Generate AI upload metadata (titles, descriptions, tags, captions)
+  if (startIdx <= 8 && streamId) {
+    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}`;
+
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${metaCmd}`);
+    } else {
+      try {
+        run(metaCmd, "Generate upload metadata (Claude AI)");
+      } catch (e) {
+        log.warn(
+          `Metadata generation failed: ${(e as Error).message}. Upload.ts will error if upload-metadata.md is missing.`,
+        );
+      }
+    }
+  }
+
+  // Step 10: Generate manual upload packages for all platforms
+  if (startIdx <= 9 && streamId) {
     const uploadCmd = `${tsx} ${base}/upload.ts --stream ${streamId}`;
 
     if (args.dryRun) {

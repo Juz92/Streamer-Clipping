@@ -207,7 +207,7 @@ async function previewClips(
 
     if (config) {
       try {
-        layoutMode = detectLayoutMode(clip.path, config.gameplayRegion, previewDir);
+        layoutMode = detectLayoutMode(clip.path, config.gameplayRegion, previewDir, config.avatarRegion);
       } catch {
         layoutMode = "unknown";
       }
@@ -268,7 +268,7 @@ async function previewTimestamp(
   let layoutMode = "unknown";
   if (config) {
     try {
-      layoutMode = detectLayoutMode(quickClip, config.gameplayRegion, previewDir);
+      layoutMode = detectLayoutMode(quickClip, config.gameplayRegion, previewDir, config.avatarRegion);
     } catch {
       // ignore
     }

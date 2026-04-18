@@ -15,8 +15,8 @@ import {
   parseHumorQuery,
   parseRunningBitsQuery,
   parseEmotionalPeaksQuery,
-  parseHotTakesQuery,
-  parseDramaQuery,
+  parseFriendRoastsQuery,
+  parseCrashOutsQuery,
   parseOneLinersQuery,
   parseStoryOfStreamQuery,
   parseEnrichmentQuery,
@@ -42,6 +42,7 @@ interface CliArgs {
   queries: number[] | null;
   notebookStrategy: "per-stream" | "shared";
   dryRun: boolean;
+  top: number;
 }
 
 function parseArgs(): CliArgs {
@@ -52,11 +53,13 @@ function parseArgs(): CliArgs {
   let queries: number[] | null = null;
   let notebookStrategy: "per-stream" | "shared" = "per-stream";
   let dryRun = false;
+  let top = 15;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--stream" && args[i + 1]) streamId = args[++i];
     else if (args[i] === "--force") force = true;
     else if (args[i] === "--enrich-only") enrichOnly = true;
+    else if (args[i] === "--top" && args[i + 1]) top = parseInt(args[++i], 10);
     else if (args[i] === "--queries" && args[i + 1]) {
       queries = args[++i].split(",").map((n) => parseInt(n, 10));
     } else if (args[i] === "--notebook-strategy" && args[i + 1]) {
@@ -74,7 +77,7 @@ function parseArgs(): CliArgs {
     process.exit(1);
   }
 
-  return { streamId, force, enrichOnly, queries, notebookStrategy, dryRun };
+  return { streamId, force, enrichOnly, queries, notebookStrategy, dryRun, top };
 }
 
 async function main(): Promise<void> {
@@ -191,11 +194,11 @@ async function main(): Promise<void> {
           case "emotional-peaks":
             picks = parseEmotionalPeaksQuery(response);
             break;
-          case "hot-takes":
-            picks = parseHotTakesQuery(response);
+          case "friend-roasts":
+            picks = parseFriendRoastsQuery(response);
             break;
-          case "drama":
-            picks = parseDramaQuery(response);
+          case "crash-outs":
+            picks = parseCrashOutsQuery(response);
             break;
           case "one-liners":
             picks = parseOneLinersQuery(response);
@@ -237,6 +240,7 @@ async function main(): Promise<void> {
       // Back-fill enrichment onto deduped picks
       let matched = 0;
       let unmatched = 0;
+      let withRubric = 0;
       for (const e of enrichments) {
         const pick = deduped.find(
           (p) => Math.abs(p.startSec - e.anchorStartSec) <= 30,
@@ -253,6 +257,13 @@ async function main(): Promise<void> {
         }
         if (e.thumbnailSec) (pick as any).thumbnailSec = e.thumbnailSec;
         if (e.titleDrafts.length) (pick as any).titleDrafts = e.titleDrafts;
+        if (e.rubric) {
+          (pick as any).rubric = e.rubric;
+          withRubric++;
+        }
+      }
+      if (withRubric > 0) {
+        log.info(`Rubric extracted for ${withRubric}/${matched} matched picks`);
       }
       log.info(`Enrichment: ${matched} matched, ${unmatched} unmatched`);
       if (unmatched > 0) {
@@ -265,7 +276,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 7: Score each pick
+  // Step 7: Score each pick. When the 4-axis rubric is available from
+  // enrichment, blend it 50/50 with the rule-based score so NotebookLM's
+  // judgment on hook/flow/engagement/trend carries real weight.
   const scores = new Map<string, number>();
   for (let i = 0; i < deduped.length; i++) {
     const p = deduped[i];
@@ -277,15 +290,26 @@ async function main(): Promise<void> {
       setupOffsetSec: p.setupOffsetSec,
       categoryQueryHitCount: p.categoryQueryHitCount,
     });
-    scores.set(`${i}`, result.final);
-    (p as any).viralSubScores = result.breakdown;
+    const rubric = (p as any).rubric as
+      | { hook: number; flow: number; engagement: number; trend: number; total: number }
+      | undefined;
+    const blended = rubric
+      ? Math.round(0.5 * result.final + 0.5 * rubric.total)
+      : result.final;
+    scores.set(`${i}`, blended);
+    (p as any).viralSubScores = {
+      ...result.breakdown,
+      rubric: rubric ?? null,
+      blendedFinal: blended,
+    };
   }
 
-  // Step 8: Sort by score descending
+  // Step 8: Sort by score descending, cap at --top (default 15)
   const sortedIndices = Array.from(scores.keys()).sort(
     (a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0),
   );
-  const sortedPicks = sortedIndices.map((i) => deduped[parseInt(i, 10)]);
+  const sortedPicks = sortedIndices.map((i) => deduped[parseInt(i, 10)]).slice(0, cli.top);
+  log.info(`Capped to top ${cli.top} picks (${sortedIndices.length} total before cap)`);
 
   // Step 9: Write notebooklm-moments.json
   const nlmMoments = sortedPicks.map((p, i) => ({
@@ -303,6 +327,7 @@ async function main(): Promise<void> {
     naturalEndSec: (p as any).naturalEndSec,
     thumbnailSec: (p as any).thumbnailSec,
     titleDrafts: (p as any).titleDrafts,
+    rubric: (p as any).rubric,
     viralSubScores: (p as any).viralSubScores,
   }));
 

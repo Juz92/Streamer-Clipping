@@ -257,7 +257,7 @@ for (const idx of selectedIndices) {
   extractMultiSegmentClip(sourcePath, segments, clipPath, tempDir);
   log.info(`  Extracted clip: ${clipFilename} (${segments.length} segment${segments.length > 1 ? "s, re-encoded" : ""})`);
 
-  const layoutMode = detectLayoutMode(clipPath, config.gameplayRegion, tempDir);
+  const layoutMode = detectLayoutMode(clipPath, config.gameplayRegion, tempDir, config.avatarRegion);
   log.info(`  Layout mode: ${layoutMode}`);
 
   let captionWords: ReturnType<typeof filterByTimeRange> | undefined;

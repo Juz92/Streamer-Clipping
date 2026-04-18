@@ -19,11 +19,13 @@ export interface StreamManifest {
   notebookSourceId?: string;
   notebookLMReviewPath?: string;
   notebookLMReviewedAt?: string;
+  whisperCaptionsPath?: string | null;
   phase:
     | "downloaded"
     | "analyzed"
     | "notebooklm-reviewed"
     | "clipped"
+    | "rendered"
     | "uploaded";
   createdAt: string;
   updatedAt: string;

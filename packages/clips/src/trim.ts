@@ -1,12 +1,19 @@
 /**
  * trim.ts — Browser-based interactive clip trimmer for gaming Shorts.
  *
- * Adapted from the Football Shorts clip-trimmer. Reads unified-moments.json
- * + raw-clips/ directory instead of a database. Shows each clip in a video
- * player with frame-level trim controls, then trims in-place with ffmpeg.
+ * Supports TWO data sources:
+ *   1. unified-moments.json + raw-clips/  (manual/scan picks)
+ *   2. notebooklm-moments.json            (auto-extracts padded clips from stream)
+ *
+ * For source 2, extracts padded clips (+10s each side) from stream.mp4 using
+ * ffmpeg stream copy, then loads them into the trimmer with NotebookLM's
+ * enrichment data (coldOpen, naturalEnd, thumbnail, titleDrafts) as initial
+ * trim boundaries.
  *
  * Usage:
  *   npx tsx packages/clips/src/trim.ts --stream <id> [--port 3847]
+ *   npx tsx packages/clips/src/trim.ts --stream <id> --source notebooklm
+ *   npx tsx packages/clips/src/trim.ts --stream <id> --source unified
  */
 
 import { createServer } from "http";
@@ -22,23 +29,52 @@ import {
 import { join, basename } from "path";
 import { execSync } from "child_process";
 import { createLogger, ensureDir } from "@ltx/shared";
-import { findStreamDir, loadManifest } from "./lib/manifest.js";
+import { findStreamDir, loadManifest, saveManifest } from "./lib/manifest.js";
+import { parseAudioLevels, type AudioSample } from "./lib/audio-analyzer.js";
+import { transcribeClip, type WhisperWord } from "./lib/whisper-captions.js";
+import { computeAutoTrim } from "./lib/auto-trim.js";
+import { finalizeClip, remapWhisperForFinalized } from "./lib/trim-finalize.js";
+import { diarizeClip, isPyannoteAvailable, type SpeakerTurn } from "./lib/diarize.js";
 
 const log = createLogger("trim");
+
+interface ClipMeta {
+  rank: number;
+  clipFile: string;
+  description: string;
+  hookText: string;
+  viralityScore: number;
+  layoutMode: string;
+  source: string;
+  targetMin: number;
+  targetMax: number;
+  titleDrafts?: string[];
+  initialFlashStart?: number;
+  initialFlashEnd?: number;
+  initialContentStart?: number;
+  initialContentEnd?: number;
+}
 
 async function main() {
   const args = process.argv.slice(2);
   if (!args.includes("--stream")) {
-    console.log("Usage: trim.ts --stream <id> [--port 3847]");
+    console.log("Usage: trim.ts --stream <id> [--port 3847] [--source notebooklm|unified|auto] [--auto]");
     console.log(
       "Opens a browser-based clip trimming tool for fine-tuning raw clip boundaries.",
+    );
+    console.log(
+      "  --auto    Skip the browser and finalize every clip using whisper + audio peak data.",
     );
     process.exit(1);
   }
 
   const streamId = args[args.indexOf("--stream") + 1];
   const portIdx = args.indexOf("--port");
-  const port = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 3847;
+  const port = portIdx >= 0 ? parseInt(args[portIdx + 1], 10) : 3900;
+  const sourceIdx = args.indexOf("--source");
+  const sourceFlag = sourceIdx >= 0 ? args[sourceIdx + 1] : "auto";
+  const autoMode = args.includes("--auto");
+  const forceAuto = args.includes("--force");
 
   const streamDir = findStreamDir(streamId);
   if (!streamDir) {
@@ -46,67 +82,191 @@ async function main() {
     process.exit(1);
   }
 
+  if (autoMode) {
+    await runAutoTrim(streamId, streamDir, forceAuto);
+    return;
+  }
+
   const manifest = loadManifest(streamId);
   const rawClipsDir = join(streamDir, "raw-clips");
-  if (!existsSync(rawClipsDir)) {
-    log.error(`No raw-clips/ directory found in ${streamDir}`);
-    process.exit(1);
-  }
-
-  // Load unified-moments.json for clip metadata
   const unifiedPath = join(streamDir, "unified-moments.json");
-  let moments: Array<{
-    description?: string;
-    hookText?: string;
-    viralityScore?: number;
-    layoutMode?: string;
-    startSec?: number;
-    endSec?: number;
-    durationSec?: number;
-    source?: string;
-  }> = [];
-  if (existsSync(unifiedPath)) {
-    moments = JSON.parse(readFileSync(unifiedPath, "utf-8"));
+  const nlmPath = join(streamDir, "notebooklm-moments.json");
+
+  // Determine data source
+  const hasRawClips = existsSync(rawClipsDir) && readdirSync(rawClipsDir).some(f => f.endsWith(".mp4"));
+  const hasUnified = existsSync(unifiedPath);
+  const hasNlm = existsSync(nlmPath);
+
+  let useNlm = false;
+  if (sourceFlag === "notebooklm") useNlm = true;
+  else if (sourceFlag === "unified") useNlm = false;
+  else {
+    // auto: prefer raw-clips+unified if available, else notebooklm
+    useNlm = !hasRawClips && hasNlm;
   }
 
-  // Scan raw-clips/ and match to moments by NN prefix
-  const clipFiles = readdirSync(rawClipsDir)
-    .filter((f) => f.endsWith(".mp4"))
-    .sort();
+  let clips: ClipMeta[] = [];
+  let reserveClips: string[] = [];
+  let serveDir = rawClipsDir; // directory where .mp4 files are served from
 
-  if (clipFiles.length === 0) {
-    log.error("No .mp4 files found in raw-clips/");
-    process.exit(1);
+  if (useNlm) {
+    // ── NotebookLM source ──
+    if (!hasNlm) {
+      log.error(`No notebooklm-moments.json found in ${streamDir}`);
+      process.exit(1);
+    }
+    if (!manifest.videoPath || !existsSync(manifest.videoPath)) {
+      log.error(`No stream.mp4 found for extracting clips`);
+      process.exit(1);
+    }
+
+    const nlmMoments: Array<{
+      id?: string;
+      startSec: number;
+      endSec: number;
+      durationSec?: number;
+      hook?: string;
+      description?: string;
+      viralScore?: number;
+      categories?: string[];
+      titleDrafts?: string[];
+      coldOpenSec?: number;
+      naturalEndSec?: number;
+      thumbnailSec?: number;
+    }> = JSON.parse(readFileSync(nlmPath, "utf-8"));
+
+    if (nlmMoments.length === 0) {
+      log.error("notebooklm-moments.json is empty — no picks to trim");
+      process.exit(1);
+    }
+
+    // Extract padded clips from stream (+10s each side)
+    const paddedClipsDir = join(streamDir, "raw-clips");
+    mkdirSync(paddedClipsDir, { recursive: true });
+    serveDir = paddedClipsDir;
+
+    const PAD_SEC = 10;
+    const streamPath = manifest.videoPath.replace(/\\/g, "/");
+
+    for (let i = 0; i < nlmMoments.length; i++) {
+      const m = nlmMoments[i];
+      const rank = i + 1;
+      const slug = (m.hook || m.description || `clip-${rank}`)
+        .replace(/[^a-zA-Z0-9 ]/g, "")
+        .replace(/\s+/g, "-")
+        .slice(0, 40)
+        .toLowerCase();
+      const fileName = `${String(rank).padStart(2, "0")}-${slug}.mp4`;
+      const outPath = join(paddedClipsDir, fileName);
+
+      if (!existsSync(outPath)) {
+        const paddedStart = Math.max(0, m.startSec - PAD_SEC);
+        const paddedDur = (m.endSec - m.startSec) + (PAD_SEC * 2);
+        log.info(`Extracting padded clip ${rank}: ${paddedStart}s +${paddedDur}s → ${fileName}`);
+        try {
+          execSync(
+            `ffmpeg -ss ${paddedStart} -i "${streamPath}" -t ${paddedDur} -c copy "${outPath.replace(/\\/g, "/")}" -y`,
+            { stdio: "pipe" },
+          );
+        } catch (e) {
+          log.error(`Failed to extract clip ${rank}: ${(e as Error).message}`);
+          continue;
+        }
+      }
+
+      // Compute initial trim values from enrichment data
+      // coldOpen → flash start, naturalEnd → content end
+      const contentStart = m.coldOpenSec ? Math.max(0, m.coldOpenSec - (m.startSec - PAD_SEC)) : PAD_SEC;
+      const contentEnd = m.naturalEndSec ? m.naturalEndSec - (m.startSec - PAD_SEC) : m.endSec - m.startSec + PAD_SEC;
+      // Flash: 2s window around the peak (startSec is the anchor)
+      const flashAnchor = m.startSec - (m.startSec - PAD_SEC); // = PAD_SEC
+      const flashStart = Math.max(0, flashAnchor - 1);
+      const flashEnd = flashAnchor + 1;
+
+      clips.push({
+        rank,
+        clipFile: fileName,
+        description: m.description || m.hook || `Clip ${rank}`,
+        hookText: m.hook || "",
+        viralityScore: m.viralScore || 0,
+        layoutMode: "gameplay",
+        source: "notebooklm",
+        targetMin: 20,
+        targetMax: 35,
+        titleDrafts: m.titleDrafts,
+        initialFlashStart: flashStart,
+        initialFlashEnd: flashEnd,
+        initialContentStart: contentStart,
+        initialContentEnd: Math.min(contentEnd, (m.endSec - m.startSec) + PAD_SEC * 2),
+      });
+    }
+
+    log.info(`Loaded ${clips.length} NotebookLM picks with padded extraction`);
+  } else {
+    // ── Unified moments source (original path) ──
+    if (!hasRawClips) {
+      log.error(`No raw-clips/ directory found in ${streamDir}`);
+      process.exit(1);
+    }
+
+    let moments: Array<{
+      description?: string;
+      hookText?: string;
+      viralityScore?: number;
+      layoutMode?: string;
+      startSec?: number;
+      endSec?: number;
+      durationSec?: number;
+      source?: string;
+    }> = [];
+    if (hasUnified) {
+      moments = JSON.parse(readFileSync(unifiedPath, "utf-8"));
+    }
+
+    const clipFiles = readdirSync(rawClipsDir)
+      .filter((f) => f.endsWith(".mp4"))
+      .sort();
+
+    if (clipFiles.length === 0) {
+      log.error("No .mp4 files found in raw-clips/");
+      process.exit(1);
+    }
+
+    clips = clipFiles.map((file) => {
+      const rankMatch = file.match(/^(\d+)-/);
+      const rank = rankMatch ? parseInt(rankMatch[1], 10) : 0;
+      const moment = rank > 0 && rank <= moments.length ? moments[rank - 1] : null;
+      return {
+        rank,
+        clipFile: file,
+        description: moment?.description || file.replace(/^\d+-/, "").replace(/\.mp4$/, "").replace(/-/g, " "),
+        hookText: moment?.hookText || "",
+        viralityScore: moment?.viralityScore || 0,
+        layoutMode: moment?.layoutMode || "gameplay",
+        source: moment?.source || "manual",
+        targetMin: 20,
+        targetMax: 25,
+      };
+    });
+
+    reserveClips = readdirSync(rawClipsDir)
+      .filter((f) => f.endsWith(".mp4") && !f.match(/^\d+-/))
+      .sort();
   }
-
-  const clips = clipFiles.map((file) => {
-    const rankMatch = file.match(/^(\d+)-/);
-    const rank = rankMatch ? parseInt(rankMatch[1], 10) : 0;
-    const moment = rank > 0 && rank <= moments.length ? moments[rank - 1] : null;
-    return {
-      rank,
-      clipFile: file,
-      description: moment?.description || file.replace(/^\d+-/, "").replace(/\.mp4$/, "").replace(/-/g, " "),
-      hookText: moment?.hookText || "",
-      viralityScore: moment?.viralityScore || 0,
-      layoutMode: moment?.layoutMode || "gameplay",
-      source: moment?.source || "manual",
-      targetMin: 20,
-      targetMax: 25,
-    };
-  });
-
-  // Find reserve clips (files in raw-clips not matching standard NN- pattern)
-  const standardFiles = new Set(clipFiles);
-  const reserveClips = readdirSync(rawClipsDir)
-    .filter((f) => f.endsWith(".mp4") && !f.match(/^\d+-/))
-    .sort();
 
   const streamTitle = manifest.title || streamId;
+
+  // Load channel-config for default crop regions
+  let channelConfig: Record<string, unknown> = {};
+  const channelConfigPath = join(process.cwd(), "data", "clips", "channel-config.json");
+  if (existsSync(channelConfigPath)) {
+    try { channelConfig = JSON.parse(readFileSync(channelConfigPath, "utf-8")); } catch {}
+  }
 
   const clipData = JSON.stringify({
     streamId,
     streamTitle,
+    channelConfig,
     clips: clips.map((c) => ({
       rank: c.rank,
       clipFile: c.clipFile,
@@ -117,6 +277,11 @@ async function main() {
       source: c.source,
       targetMin: c.targetMin,
       targetMax: c.targetMax,
+      titleDrafts: c.titleDrafts,
+      initialFlashStart: c.initialFlashStart,
+      initialFlashEnd: c.initialFlashEnd,
+      initialContentStart: c.initialContentStart,
+      initialContentEnd: c.initialContentEnd,
     })),
     reserveClips,
   });
@@ -136,7 +301,7 @@ async function main() {
 
     if (url.pathname.startsWith("/clips/")) {
       const file = decodeURIComponent(url.pathname.replace("/clips/", ""));
-      const filePath = join(rawClipsDir, file);
+      const filePath = join(serveDir, file);
       if (existsSync(filePath)) {
         const data = readFileSync(filePath);
         res.writeHead(200, {
@@ -273,7 +438,7 @@ async function main() {
           if (!existsSync(backupDir)) {
             ensureDir(backupDir);
             for (const t of approved) {
-              const src = join(rawClipsDir, t.clipFile);
+              const src = join(serveDir, t.clipFile);
               const dst = join(backupDir, t.clipFile);
               if (existsSync(src) && !existsSync(dst)) {
                 try {
@@ -294,12 +459,12 @@ async function main() {
           for (const t of approved) {
             try {
               const srcFile = t.replacedWith || t.clipFile;
-              const srcPath = join(rawClipsDir, srcFile).replace(/\\/g, "/");
+              const srcPath = join(serveDir, srcFile).replace(/\\/g, "/");
               const flashPath = join(tempDir, `flash-${t.clipFile}`).replace(/\\/g, "/");
               const contentPath = join(tempDir, `content-${t.clipFile}`).replace(/\\/g, "/");
               const concatPath = join(tempDir, `concat-${t.clipFile}.txt`).replace(/\\/g, "/");
               const outPath = join(tempDir, `out-${t.clipFile}`).replace(/\\/g, "/");
-              const destPath = join(rawClipsDir, t.clipFile);
+              const destPath = join(serveDir, t.clipFile);
 
               // Extract flash
               execSync(
@@ -371,6 +536,352 @@ async function main() {
       /* ignore if open fails */
     }
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Auto-trim path — no browser, uses whisper + audio peaks to finalize every clip
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface AutoMoment {
+  rank: number;
+  slug: string;
+  paddedFile: string;
+  streamStartSec: number;
+  streamEndSec: number;
+  hookText: string;
+  description: string;
+  viralityScore: number;
+  targetMin: number;
+  targetMax: number;
+}
+
+const PAD_SEC = 10;
+
+function slugifyForFile(s: string, maxLen = 40): string {
+  return s
+    .replace(/[^a-zA-Z0-9 ]/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, maxLen)
+    .toLowerCase();
+}
+
+function probeDurationSec(path: string): number {
+  try {
+    const out = execSync(
+      `ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${path.replace(/\\/g, "/")}"`,
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return parseFloat(out.trim());
+  } catch {
+    return 0;
+  }
+}
+
+function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): AutoMoment[] {
+  const nlmPath = join(streamDir, "notebooklm-moments.json");
+  const unifiedPath = join(streamDir, "unified-moments.json");
+
+  if (existsSync(nlmPath)) {
+    const nlm: Array<{
+      startSec: number;
+      endSec: number;
+      hook?: string;
+      description?: string;
+      viralScore?: number;
+    }> = JSON.parse(readFileSync(nlmPath, "utf-8"));
+    return nlm.map((m, i) => {
+      const rank = i + 1;
+      const slug = slugifyForFile(m.hook || m.description || `clip-${rank}`);
+      return {
+        rank,
+        slug,
+        paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
+        streamStartSec: m.startSec,
+        streamEndSec: m.endSec,
+        hookText: m.hook || "",
+        description: m.description || m.hook || `Clip ${rank}`,
+        viralityScore: m.viralScore ?? 0,
+        targetMin: 20,
+        targetMax: 35,
+      };
+    });
+  }
+
+  if (existsSync(unifiedPath)) {
+    const unified: Array<{
+      startSec: number;
+      endSec: number;
+      description?: string;
+      hookText?: string;
+      viralityScore?: number;
+    }> = JSON.parse(readFileSync(unifiedPath, "utf-8"));
+    return unified.map((m, i) => {
+      const rank = i + 1;
+      const slug = slugifyForFile(m.hookText || m.description || `clip-${rank}`);
+      return {
+        rank,
+        slug,
+        paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
+        streamStartSec: m.startSec,
+        streamEndSec: m.endSec,
+        hookText: m.hookText || "",
+        description: m.description || `Clip ${rank}`,
+        viralityScore: m.viralityScore ?? 0,
+        targetMin: 20,
+        targetMax: 35,
+      };
+    });
+  }
+
+  throw new Error(
+    `No notebooklm-moments.json or unified-moments.json in ${streamDir}`,
+  );
+}
+
+async function runAutoTrim(streamId: string, streamDir: string, force: boolean): Promise<void> {
+  const trimResultsPath = join(streamDir, "trim-results.json");
+  if (existsSync(trimResultsPath) && !force) {
+    log.info(`trim-results.json already exists — skipping auto-trim. Pass --force to regenerate.`);
+    return;
+  }
+
+  const manifest = loadManifest(streamId);
+  if (!manifest.videoPath || !existsSync(manifest.videoPath)) {
+    log.error("Source stream.mp4 not found — cannot extract padded clips.");
+    process.exit(1);
+  }
+
+  const moments = loadAutoMoments(streamDir, manifest);
+  if (moments.length === 0) {
+    log.warn("No moments to auto-trim.");
+    return;
+  }
+
+  const rawClipsDir = join(streamDir, "raw-clips");
+  const rawClipsBackupDir = join(streamDir, "raw-clips-backup");
+  const whisperDir = join(streamDir, "whisper-captions");
+  const paddedWhisperDir = join(streamDir, "temp", "padded-whisper");
+  const diarizeDir = join(streamDir, "temp", "diarize");
+  const tempDir = join(streamDir, "temp");
+  ensureDir(rawClipsDir);
+  ensureDir(rawClipsBackupDir);
+  ensureDir(whisperDir);
+  ensureDir(paddedWhisperDir);
+  ensureDir(diarizeDir);
+  ensureDir(tempDir);
+
+  // One-shot check so we don't spam the log per clip.
+  const useSpeakers = isPyannoteAvailable() && !!process.env.HF_TOKEN;
+  if (useSpeakers) {
+    log.info("Pyannote detected — speaker-change boundary snapping enabled");
+  } else {
+    log.info("Pyannote/HF_TOKEN unavailable — falling back to silence+punctuation snapping");
+  }
+
+  // Step 1: extract padded clips (+PAD_SEC each side) via stream copy if missing.
+  const streamPath = manifest.videoPath.replace(/\\/g, "/");
+  for (const m of moments) {
+    const outPath = join(rawClipsDir, m.paddedFile);
+    if (existsSync(outPath)) continue;
+
+    const paddedStart = Math.max(0, m.streamStartSec - PAD_SEC);
+    const paddedDur = m.streamEndSec - m.streamStartSec + PAD_SEC * 2;
+    log.info(`[${m.rank}] Extracting padded clip ${paddedStart.toFixed(1)}s +${paddedDur.toFixed(1)}s`);
+    try {
+      execSync(
+        `ffmpeg -ss ${paddedStart} -i "${streamPath}" -t ${paddedDur} -c copy "${outPath.replace(/\\/g, "/")}" -y`,
+        { stdio: "pipe" },
+      );
+    } catch (e) {
+      log.error(`[${m.rank}] Padded extraction failed: ${(e as Error).message}`);
+    }
+  }
+
+  // Step 2: load stream-level audio samples once (absolute timebase).
+  let audioSamples: AudioSample[] | null = null;
+  if (manifest.audioLevelsPath && existsSync(manifest.audioLevelsPath)) {
+    try {
+      audioSamples = parseAudioLevels(manifest.audioLevelsPath);
+      log.info(`Loaded ${audioSamples.length} audio samples for flash anchoring`);
+    } catch (e) {
+      log.warn(`audio_levels.txt parse failed: ${(e as Error).message}`);
+    }
+  } else {
+    log.warn("No audio_levels.txt — flash anchor will fall back to signal center");
+  }
+
+  const approved: Array<{
+    rank: number;
+    clipFile: string;
+    flashStart: number;
+    flashDuration: number;
+    contentStart: number;
+    contentEnd: number;
+    contentDuration: number;
+    totalDuration: number;
+    status: "approved";
+    notes: string;
+  }> = [];
+
+  for (const m of moments) {
+    const padded = join(rawClipsDir, m.paddedFile);
+    if (!existsSync(padded)) {
+      log.warn(`[${m.rank}] Padded clip missing — skipping`);
+      continue;
+    }
+
+    const paddedDurationSec = probeDurationSec(padded);
+    if (paddedDurationSec < 5) {
+      log.warn(`[${m.rank}] Padded duration ${paddedDurationSec}s too short — skipping`);
+      continue;
+    }
+
+    // Step 3: whisper the padded clip (cache under temp/padded-whisper/).
+    const paddedWhisperPath = join(paddedWhisperDir, m.paddedFile.replace(/\.mp4$/, ".json"));
+    let paddedWords: WhisperWord[] | null = null;
+    try {
+      if (!existsSync(paddedWhisperPath)) {
+        log.info(`[${m.rank}] Whisper-transcribing padded clip...`);
+        paddedWords = transcribeClip(padded, paddedWhisperPath);
+      } else {
+        paddedWords = JSON.parse(readFileSync(paddedWhisperPath, "utf-8")) as WhisperWord[];
+      }
+    } catch (e) {
+      log.warn(`[${m.rank}] Whisper failed — boundaries will not snap: ${(e as Error).message}`);
+    }
+
+    // Step 3b: diarize the padded clip for speaker-change boundary snapping.
+    let turns: SpeakerTurn[] | null = null;
+    if (useSpeakers) {
+      const diarizePath = join(diarizeDir, m.paddedFile.replace(/\.mp4$/, ".json"));
+      try {
+        turns = diarizeClip(padded, diarizePath);
+        if (turns) log.info(`[${m.rank}] Diarization: ${turns.length} turns`);
+      } catch (e) {
+        log.warn(`[${m.rank}] Diarization failed: ${(e as Error).message}`);
+      }
+    }
+
+    // Step 4: translate stream time → padded-clip time for the signal range.
+    const paddedStartAbs = Math.max(0, m.streamStartSec - PAD_SEC);
+    const signalStartInClip = m.streamStartSec - paddedStartAbs; // ≈ PAD_SEC
+    const signalEndInClip = m.streamEndSec - paddedStartAbs;
+
+    // Remap audio samples to clip-relative seconds so peak search matches the clip.
+    const clipAudio = audioSamples
+      ? audioSamples
+          .filter((s) => s.timeSec >= paddedStartAbs && s.timeSec <= paddedStartAbs + paddedDurationSec)
+          .map((s) => ({ timeSec: s.timeSec - paddedStartAbs, rmsLevel: s.rmsLevel }))
+      : null;
+
+    const result = computeAutoTrim({
+      paddedDurationSec,
+      signalStartInClipSec: signalStartInClip,
+      signalEndInClipSec: signalEndInClip,
+      whisperWords: paddedWords,
+      audioSamples: clipAudio,
+      turns,
+    });
+
+    // Step 5: keep the result inside the configured target duration. If the snap
+    // pushed content past targetMax + 5s, pull the end back toward the signal.
+    const totalTarget = m.targetMax + 5;
+    if (result.contentDuration + result.flashDuration > totalTarget) {
+      const maxContent = totalTarget - result.flashDuration;
+      result.contentEnd = result.contentStart + maxContent;
+      result.contentDuration = maxContent;
+    }
+
+    log.info(
+      `[${m.rank}] flash ${result.flashStart.toFixed(2)}s +${result.flashDuration.toFixed(2)}s ` +
+        `(${result.notes.flashSource}); content ${result.contentStart.toFixed(2)}-${result.contentEnd.toFixed(2)}s ` +
+        `(start:${result.notes.startSnap}, end:${result.notes.endSnap})`,
+    );
+
+    // Step 6a: snapshot the padded clip into raw-clips-backup/ so the review
+    // pass can re-finalize against untouched source when Gemini flags an
+    // extend. Skip copy if a backup already exists — finalize is idempotent
+    // on source, not destructive on backup.
+    const backupPath = join(rawClipsBackupDir, m.paddedFile);
+    if (!existsSync(backupPath)) {
+      try {
+        execSync(
+          `ffmpeg -i "${padded.replace(/\\/g, "/")}" -c copy "${backupPath.replace(/\\/g, "/")}" -y`,
+          { stdio: "pipe" },
+        );
+      } catch (e) {
+        log.warn(`[${m.rank}] Could not snapshot padded clip: ${(e as Error).message}`);
+      }
+    }
+
+    // Step 6b: finalize — replace padded raw clip with flash+content assembly.
+    try {
+      finalizeClip({
+        srcPath: padded,
+        flashStart: result.flashStart,
+        flashDuration: result.flashDuration,
+        contentStart: result.contentStart,
+        contentDuration: result.contentDuration,
+        tempDir,
+        outPath: padded,
+      });
+    } catch (e) {
+      log.error(`[${m.rank}] finalize failed: ${(e as Error).message}`);
+      continue;
+    }
+
+    // Step 7: rewrite whisper JSON for the finalized timeline.
+    if (paddedWords) {
+      const remapped = remapWhisperForFinalized(
+        paddedWords,
+        result.contentStart,
+        result.contentEnd,
+        result.flashDuration,
+      );
+      const finalWhisperPath = join(whisperDir, m.paddedFile.replace(/\.mp4$/, ".json"));
+      writeFileSync(finalWhisperPath, JSON.stringify(remapped, null, 2), "utf-8");
+    }
+
+    approved.push({
+      rank: m.rank,
+      clipFile: m.paddedFile,
+      flashStart: result.flashStart,
+      flashDuration: result.flashDuration,
+      contentStart: result.contentStart,
+      contentEnd: result.contentEnd,
+      contentDuration: result.contentDuration,
+      totalDuration: result.flashDuration + result.contentDuration,
+      status: "approved",
+      notes: `flash:${result.notes.flashSource};start:${result.notes.startSnap};end:${result.notes.endSnap}`,
+    });
+  }
+
+  // Step 8: persist trim-results.json and bump phase.
+  writeFileSync(
+    trimResultsPath,
+    JSON.stringify(
+      {
+        streamId,
+        timestamp: new Date().toISOString(),
+        mode: "auto",
+        totalClips: moments.length,
+        approved,
+        rejected: [],
+      },
+      null,
+      2,
+    ),
+    "utf-8",
+  );
+  log.info(`\nAuto-trim complete — ${approved.length}/${moments.length} clips finalized.`);
+  log.info(`Results: ${trimResultsPath}`);
+
+  try {
+    manifest.phase = "clipped";
+    saveManifest(manifest);
+  } catch (e) {
+    log.warn(`Could not update manifest phase: ${(e as Error).message}`);
+  }
 }
 
 function buildHTML(clipDataJson: string): string {
@@ -456,6 +967,17 @@ function buildHTML(clipDataJson: string): string {
   .summary th { text-align: left; color: #a0a0b0; padding: 6px 8px; border-bottom: 1px solid #2a2a3a; }
   .summary td { padding: 6px 8px; border-bottom: 1px solid #1a1a2a; }
   .summary .mono { font-family: 'Courier New', monospace; color: #d4a017; }
+
+  /* Crop overlay */
+  .crop-overlay { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; z-index: 10; overflow: hidden; }
+  .crop-box { position: absolute; cursor: move; pointer-events: auto; user-select: none; box-sizing: border-box; }
+  .crop-box.talking  { border: 3px solid #22c55e; background: rgba(34,197,94,0.07); }
+  .crop-box.avatar   { border: 3px solid #f59e0b; background: rgba(245,158,11,0.07); }
+  .crop-box.gameplay { border: 3px solid #60a5fa; background: rgba(96,165,250,0.07); }
+  .crop-label { position: absolute; top: 4px; left: 6px; font-size: 11px; font-weight: 800; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,0.9); text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; }
+  .crop-coords { position: absolute; bottom: 4px; left: 6px; font-size: 9px; color: rgba(255,255,255,0.65); font-family: 'Courier New', monospace; pointer-events: none; white-space: nowrap; }
+  .resize-handle { position: absolute; bottom: 0; right: 0; width: 18px; height: 18px; cursor: se-resize; background: rgba(255,255,255,0.35); border-top-left-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: rgba(255,255,255,0.7); }
+  .layout-btn.active { border-color: #d4a017 !important; background: #261f00 !important; color: #d4a017 !important; }
 </style>
 </head>
 <body>
@@ -467,6 +989,22 @@ function buildHTML(clipDataJson: string): string {
 
   <div class="player-area">
     <video id="video" preload="auto" onclick="togglePause()"></video>
+    <div id="cropOverlay" class="crop-overlay">
+      <div id="talkingBox" class="crop-box talking" style="display:none;">
+        <div class="crop-label">↔ Talking Crop</div>
+        <div class="crop-coords" id="talkingCoords"></div>
+      </div>
+      <div id="avatarBox" class="crop-box avatar" style="display:none;">
+        <div class="crop-label">Avatar</div>
+        <div class="crop-coords" id="avatarCoords"></div>
+        <div class="resize-handle" id="avatarResize">↘</div>
+      </div>
+      <div id="gameplayBox" class="crop-box gameplay" style="display:none;">
+        <div class="crop-label">Gameplay</div>
+        <div class="crop-coords" id="gameplayCoords"></div>
+        <div class="resize-handle" id="gameplayResize">↘</div>
+      </div>
+    </div>
     <div class="time-overlay" id="timeOverlay">0.00s</div>
     <div class="speed-badge" id="speedBadge">1.0x</div>
     <div class="target-badge" id="targetBadge">Target: 25-60s</div>
@@ -512,6 +1050,10 @@ function buildHTML(clipDataJson: string): string {
       <button class="nudge-btn" onclick="nudgeSlider('flashEnd',1)" title="+1 frame">&rsaquo;</button>
       <span class="time" id="flashEndTime" style="color:#e27b00">2.00s</span>
     </div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-bottom:6px;">
+      <button class="btn" onclick="setFlashStartHere()" title="Set flash start to current playhead" style="flex:1;background:#2b1f00;color:#f59e0b;border:2px solid #f59e0b;font-size:13px;font-weight:700;padding:10px 8px;">&#9654; Flash start</button>
+      <button class="btn" onclick="setFlashEndHere()" title="Set flash end to current playhead" style="flex:1;background:#2b1a00;color:#e27b00;border:2px solid #e27b00;font-size:13px;font-weight:700;padding:10px 8px;">Flash end &#9654;</button>
+    </div>
     <div style="display:flex;gap:8px;justify-content:center;margin-bottom:14px;">
       <button class="btn btn-secondary" onclick="previewFlash()" style="font-size:12px;padding:6px 16px;border:1px solid #f59e0b;color:#f59e0b;">Play Flash</button>
     </div>
@@ -540,11 +1082,23 @@ function buildHTML(clipDataJson: string): string {
       <span class="time" id="shiftTime" style="color:#1a8f3c">0.00s</span>
     </div>
 
-    <div style="display:flex;gap:8px;justify-content:center;margin-top:8px;">
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;margin-bottom:6px;">
+      <button class="btn" onclick="setStartHere()" title="Set content start to current playhead" style="flex:1;background:#0d2b12;color:#22c55e;border:2px solid #22c55e;font-size:13px;font-weight:700;padding:10px 8px;letter-spacing:0.5px;">&#9654; Start here</button>
+      <button class="btn" onclick="setEndHere()" title="Set content end to current playhead" style="flex:1;background:#2b0d0d;color:#ef4444;border:2px solid #ef4444;font-size:13px;font-weight:700;padding:10px 8px;letter-spacing:0.5px;">End here &#9654;</button>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:4px;">
       <button class="btn btn-secondary" onclick="previewContent()" style="font-size:12px;padding:6px 16px;border:1px solid #22c55e;color:#22c55e;">Play Content</button>
       <button class="btn btn-secondary" onclick="saveState()" style="font-size:12px;padding:6px 16px;">Save</button>
       <button class="btn btn-secondary" onclick="revertState()" style="font-size:12px;padding:6px 16px;" id="revertBtn" disabled>Revert</button>
     </div>
+
+    <div style="height:1px;background:#2a2a3a;margin:14px 0 12px;"></div>
+    <div style="font-size:11px;color:#a0a0b0;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Layout Template</div>
+    <div style="display:flex;gap:8px;margin-bottom:6px;">
+      <button id="btnGameplay" class="btn btn-secondary layout-btn" onclick="setLayout('gameplay')" style="flex:1;font-size:12px;padding:9px 8px;">⊞ Gameplay (2-panel)</button>
+      <button id="btnTalking" class="btn btn-secondary layout-btn" onclick="setLayout('talking')" style="flex:1;font-size:12px;padding:9px 8px;">◉ Talking (full crop)</button>
+    </div>
+    <div style="font-size:11px;color:#6a6a7a;margin-bottom:4px;">Drag boxes on video to position · drag <b style="color:#a0a0b0">↘</b> corner to resize</div>
   </div>
 
   <div class="info-bar">
@@ -559,6 +1113,7 @@ function buildHTML(clipDataJson: string): string {
     <div class="shot-label" id="shotLabel"></div>
     <div class="text" id="descriptionText"></div>
     <div class="caption" id="hookTextDisplay"></div>
+    <div class="caption" id="titleDraftsDisplay" style="display:none;color:#8b8ba0;margin-top:4px;"></div>
   </div>
 
   <div style="margin-bottom:12px;">
@@ -623,8 +1178,15 @@ DATA.clips.forEach((c, i) => {
 
 // Pre-set trim state and flash state
 DATA.clips.forEach((c, i) => {
-  trimState[i] = { startTime: 0, endTime: 9999, adjusted: false };
-  flashState[i] = { start: 0, end: 2 }; // default 2s flash at start
+  trimState[i] = {
+    startTime: c.initialContentStart ?? 0,
+    endTime: c.initialContentEnd ?? 9999,
+    adjusted: false,
+  };
+  flashState[i] = {
+    start: c.initialFlashStart ?? 0,
+    end: c.initialFlashEnd ?? 2,
+  };
 });
 
 // Time overlay update
@@ -660,6 +1222,46 @@ function previewContent() {
   previewEndTime = s.endTime;
   video.play();
   updatePlayBtn();
+}
+
+function setStartHere() {
+  const t = video.currentTime;
+  trimState[currentIndex].startTime = t;
+  trimState[currentIndex].adjusted = true;
+  startSlider.value = Math.floor(t * 100);
+  const mid = (t + trimState[currentIndex].endTime) / 2;
+  shiftSlider.value = Math.floor(mid * 100);
+  updateDisplay();
+}
+
+function setEndHere() {
+  const t = video.currentTime;
+  trimState[currentIndex].endTime = t;
+  trimState[currentIndex].adjusted = true;
+  endSlider.value = Math.floor(t * 100);
+  const mid = (trimState[currentIndex].startTime + t) / 2;
+  shiftSlider.value = Math.floor(mid * 100);
+  updateDisplay();
+}
+
+function setFlashStartHere() {
+  const t = video.currentTime;
+  if (!flashState[currentIndex]) flashState[currentIndex] = {start: 0, end: 2};
+  flashState[currentIndex].start = t;
+  if (flashState[currentIndex].end <= t) flashState[currentIndex].end = t + 1;
+  trimState[currentIndex].adjusted = true;
+  flashStartSlider.value = Math.floor(t * 100);
+  updateDisplay();
+}
+
+function setFlashEndHere() {
+  const t = video.currentTime;
+  if (!flashState[currentIndex]) flashState[currentIndex] = {start: 0, end: 2};
+  flashState[currentIndex].end = t;
+  if (flashState[currentIndex].start >= t) flashState[currentIndex].start = Math.max(0, t - 1);
+  trimState[currentIndex].adjusted = true;
+  flashEndSlider.value = Math.floor(t * 100);
+  updateDisplay();
 }
 
 function updatePlayBtn() {
@@ -706,6 +1308,13 @@ function loadClip(index) {
     ' <span class="virality-badge ' + vClass + '">V:' + vScore + '/10</span>';
   document.getElementById("descriptionText").textContent = clip.description;
   document.getElementById("hookTextDisplay").textContent = clip.hookText ? "Hook: " + clip.hookText : "";
+  const tdEl = document.getElementById("titleDraftsDisplay");
+  if (clip.titleDrafts && clip.titleDrafts.length > 0) {
+    tdEl.style.display = "block";
+    tdEl.innerHTML = "Title drafts:<br>" + clip.titleDrafts.map((t, i) => "  " + (i+1) + ". " + t).join("<br>");
+  } else {
+    tdEl.style.display = "none";
+  }
   document.getElementById("targetBadge").textContent = "Target: " + clip.targetMin + "-" + clip.targetMax + "s";
   document.getElementById("targetRange").textContent = clip.targetMin + "-" + clip.targetMax + "s";
   document.getElementById("viralityDisplay").textContent = vScore + "/10";
@@ -719,6 +1328,10 @@ function loadClip(index) {
   document.getElementById("nextBtn").textContent = index === DATA.clips.length - 1 ? "Review \\u2192" : "Next \\u2192";
   document.getElementById("revertBtn").disabled = !savedStates[index];
   document.getElementById("clipComment").value = commentState[index] || "";
+
+  initLayoutState(index);
+  updateLayoutButtons();
+  renderOverlay();
 
   // Reset reject UI
   const rState = rejectState[index];
@@ -972,7 +1585,7 @@ function scheduleAutoSave() {
     fetch("/save-state", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trimState, flashState, rejectState, commentState }),
+      body: JSON.stringify({ trimState, flashState, rejectState, commentState, layoutState }),
     }).catch(() => {});
   }, 2000);
 }
@@ -991,6 +1604,9 @@ fetch("/load-state").then(r => r.json()).then(state => {
     }
     if (state.rejectState) rejectState = state.rejectState;
     if (state.commentState) commentState = state.commentState;
+    if (state.layoutState) {
+      Object.keys(state.layoutState).forEach(k => { layoutState[k] = state.layoutState[k]; });
+    }
     console.log("Restored saved trim state");
     loadClip(0);
     updateDots();
@@ -1105,6 +1721,7 @@ async function finalize() {
   const trimData = DATA.clips.map((c, i) => {
     const s = trimState[i];
     const r = rejectState[i];
+    const ls = layoutState[i];
     return {
       rank: c.rank,
       clipFile: c.clipFile,
@@ -1116,6 +1733,10 @@ async function finalize() {
       status: r?.rejected ? (r.replacedWith ? "replaced" : "rejected") : "approved",
       replacedWith: r?.replacedWith || undefined,
       comment: commentState[i] || "",
+      layoutMode: ls?.mode || c.layoutMode || "gameplay",
+      avatarRegion: ls?.avatar || null,
+      gameplayRegion: ls?.gameplay || null,
+      cropX: ls?.cropX ?? null,
     };
   });
 
@@ -1144,6 +1765,210 @@ async function finalize() {
     alert("Error: " + e.message);
   }
 }
+
+// ── Layout & Crop Overlay ──
+const channelConfig = DATA.channelConfig || {};
+const defaultAvatar   = channelConfig.avatarRegion   || {x:100, y:720, w:560, h:360};
+const defaultGameplay = channelConfig.gameplayRegion || {x:200, y:0,   w:1520, h:1080};
+
+let layoutState = {}; // clipIndex → { mode, avatar:{x,y,w,h}, gameplay:{x,y,w,h}, cropX }
+
+function initLayoutState(i) {
+  if (layoutState[i]) return;
+  const clip = DATA.clips[i];
+  layoutState[i] = {
+    mode: clip.layoutMode || "gameplay",
+    avatar:   { ...defaultAvatar },
+    gameplay: { ...defaultGameplay },
+    cropX: defaultAvatar.x
+  };
+}
+
+function setLayout(mode) {
+  initLayoutState(currentIndex);
+  layoutState[currentIndex].mode = mode;
+  trimState[currentIndex].adjusted = true;
+  updateLayoutButtons();
+  renderOverlay();
+  scheduleAutoSave();
+}
+
+function updateLayoutButtons() {
+  const mode = layoutState[currentIndex]?.mode || "gameplay";
+  document.getElementById("btnGameplay").classList.toggle("active", mode === "gameplay");
+  document.getElementById("btnTalking").classList.toggle("active", mode === "talking");
+}
+
+// Returns the actual rendered video content area within the element (accounts for object-fit:contain)
+function getVideoContentRect() {
+  const elW = video.offsetWidth  || 1;
+  const elH = video.offsetHeight || 1;
+  const vW  = video.videoWidth   || 1920;
+  const vH  = video.videoHeight  || 1080;
+  const srcAspect = vW / vH;
+  const elAspect  = elW / elH;
+  let w, h, x, y;
+  if (srcAspect > elAspect) { w = elW; h = elW / srcAspect; x = 0; y = (elH - h) / 2; }
+  else                      { h = elH; w = elH * srcAspect;  y = 0; x = (elW - w) / 2; }
+  return { x, y, w, h, srcW: vW, srcH: vH };
+}
+
+function srcToDisp(sx, sy, sw, sh, vr) {
+  const scaleX = vr.w / vr.srcW, scaleY = vr.h / vr.srcH;
+  return { x: vr.x + sx*scaleX, y: vr.y + sy*scaleY, w: sw*scaleX, h: sh*scaleY };
+}
+
+function dispToSrc(dx, dy, dw, dh, vr) {
+  const scaleX = vr.srcW / vr.w, scaleY = vr.srcH / vr.h;
+  return {
+    x: Math.round((dx - vr.x) * scaleX),
+    y: Math.round((dy - vr.y) * scaleY),
+    w: Math.round(dw * scaleX),
+    h: Math.round(dh * scaleY)
+  };
+}
+
+function renderOverlay() {
+  initLayoutState(currentIndex);
+  const ls = layoutState[currentIndex];
+  const overlay  = document.getElementById("cropOverlay");
+  const tBox     = document.getElementById("talkingBox");
+  const aBox     = document.getElementById("avatarBox");
+  const gBox     = document.getElementById("gameplayBox");
+
+  overlay.style.height = video.offsetHeight + "px";
+
+  const vr = getVideoContentRect();
+
+  if (ls.mode === "talking") {
+    tBox.style.display = "block";
+    aBox.style.display = "none";
+    gBox.style.display = "none";
+    // talking crop: width = ih*(9/16) ≈ 607px, height = full ih (1080px), x = cropX, y = 0
+    const srcW = Math.round(1080 * 9 / 16);
+    const d = srcToDisp(ls.cropX, 0, srcW, 1080, vr);
+    tBox.style.left   = d.x + "px";
+    tBox.style.top    = d.y + "px";
+    tBox.style.width  = d.w + "px";
+    tBox.style.height = d.h + "px";
+    document.getElementById("talkingCoords").textContent = "cropX:" + ls.cropX;
+  } else {
+    tBox.style.display = "none";
+    aBox.style.display = "block";
+    gBox.style.display = "block";
+    const ad = srcToDisp(ls.avatar.x, ls.avatar.y, ls.avatar.w, ls.avatar.h, vr);
+    aBox.style.left   = ad.x + "px";  aBox.style.top    = ad.y + "px";
+    aBox.style.width  = ad.w + "px";  aBox.style.height = ad.h + "px";
+    document.getElementById("avatarCoords").textContent =
+      ls.avatar.x + "," + ls.avatar.y + " " + ls.avatar.w + "×" + ls.avatar.h;
+    const gd = srcToDisp(ls.gameplay.x, ls.gameplay.y, ls.gameplay.w, ls.gameplay.h, vr);
+    gBox.style.left   = gd.x + "px";  gBox.style.top    = gd.y + "px";
+    gBox.style.width  = gd.w + "px";  gBox.style.height = gd.h + "px";
+    document.getElementById("gameplayCoords").textContent =
+      ls.gameplay.x + "," + ls.gameplay.y + " " + ls.gameplay.w + "×" + ls.gameplay.h;
+  }
+}
+
+function updateCropFromBoxes() {
+  const ls = layoutState[currentIndex];
+  if (!ls) return;
+  const vr = getVideoContentRect();
+  if (ls.mode === "talking") {
+    const b = document.getElementById("talkingBox");
+    const src = dispToSrc(b.offsetLeft, b.offsetTop, b.offsetWidth, b.offsetHeight, vr);
+    const maxCropX = 1920 - Math.round(1080 * 9 / 16);
+    ls.cropX = Math.max(0, Math.min(maxCropX, src.x));
+    document.getElementById("talkingCoords").textContent = "cropX:" + ls.cropX;
+  } else {
+    const ab = document.getElementById("avatarBox");
+    const gb = document.getElementById("gameplayBox");
+    const a = dispToSrc(ab.offsetLeft, ab.offsetTop, ab.offsetWidth, ab.offsetHeight, vr);
+    const g = dispToSrc(gb.offsetLeft, gb.offsetTop, gb.offsetWidth, gb.offsetHeight, vr);
+    ls.avatar   = { x: Math.max(0, a.x), y: Math.max(0, a.y), w: Math.max(10, a.w), h: Math.max(10, a.h) };
+    ls.gameplay = { x: Math.max(0, g.x), y: Math.max(0, g.y), w: Math.max(10, g.w), h: Math.max(10, g.h) };
+    document.getElementById("avatarCoords").textContent =
+      ls.avatar.x + "," + ls.avatar.y + " " + ls.avatar.w + "×" + ls.avatar.h;
+    document.getElementById("gameplayCoords").textContent =
+      ls.gameplay.x + "," + ls.gameplay.y + " " + ls.gameplay.w + "×" + ls.gameplay.h;
+  }
+  trimState[currentIndex].adjusted = true;
+}
+
+function makeDraggable(boxEl) {
+  boxEl.addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("resize-handle")) return;
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const origL = boxEl.offsetLeft, origT = boxEl.offsetTop;
+    const overlay = document.getElementById("cropOverlay");
+    const onMove = (e) => {
+      const maxL = overlay.offsetWidth  - boxEl.offsetWidth;
+      const maxT = overlay.offsetHeight - boxEl.offsetHeight;
+      boxEl.style.left = Math.max(0, Math.min(maxL, origL + e.clientX - startX)) + "px";
+      boxEl.style.top  = Math.max(0, Math.min(maxT, origT + e.clientY - startY)) + "px";
+      updateCropFromBoxes();
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      scheduleAutoSave();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+function makeResizable(handleEl) {
+  handleEl.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const boxEl = handleEl.parentElement;
+    const startX = e.clientX, startY = e.clientY;
+    const startW = boxEl.offsetWidth, startH = boxEl.offsetHeight;
+    const onMove = (e) => {
+      boxEl.style.width  = Math.max(30, startW + e.clientX - startX) + "px";
+      boxEl.style.height = Math.max(20, startH + e.clientY - startY) + "px";
+      updateCropFromBoxes();
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      scheduleAutoSave();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+// For talking box: only allow horizontal drag (lock height to video)
+document.getElementById("talkingBox").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const box = document.getElementById("talkingBox");
+  const startX = e.clientX, origL = box.offsetLeft;
+  const overlay = document.getElementById("cropOverlay");
+  const onMove = (e) => {
+    const maxL = overlay.offsetWidth - box.offsetWidth;
+    box.style.left = Math.max(0, Math.min(maxL, origL + e.clientX - startX)) + "px";
+    updateCropFromBoxes();
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    scheduleAutoSave();
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
+makeDraggable(document.getElementById("avatarBox"));
+makeDraggable(document.getElementById("gameplayBox"));
+makeResizable(document.getElementById("avatarResize"));
+makeResizable(document.getElementById("gameplayResize"));
+
+video.addEventListener("loadedmetadata", () => {
+  renderOverlay();
+});
+window.addEventListener("resize", () => { renderOverlay(); });
 
 loadClip(0);
 </script>

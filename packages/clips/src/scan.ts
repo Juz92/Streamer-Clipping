@@ -776,6 +776,7 @@ export function mergeSources(
   manualPicks: ManualPick[],
   automatedMoments: Moment[],
   notebookLMPicks: NotebookLMPickForMerge[],
+  maxClips = 15,
 ): UnifiedMoment[] {
   // Pass 1: existing manual + automated merge
   const pass1 = mergeManualAndAutomated(manualPicks, automatedMoments);
@@ -826,7 +827,9 @@ export function mergeSources(
     }
   }
 
-  return result;
+  // Cap total output to maxClips, sorted by viralityScore descending
+  const sorted = result.sort((a, b) => b.viralityScore - a.viralityScore);
+  return sorted.slice(0, maxClips);
 }
 
 function displayUnifiedMoments(

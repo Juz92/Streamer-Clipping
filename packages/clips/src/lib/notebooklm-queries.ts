@@ -21,8 +21,9 @@ N. **Short Title**
     *   **Why it's funny:** 1-2 sentences
     *   **Setup Needed:** Yes or No (if yes, note the earlier timestamp)
     *   **Humor Type:** one of: callback, running-bit, dry-joke, absurdist, reaction-gold, character-moment
+    *   **Broad Appeal:** Yes or No (would someone who has never played this game find this funny with zero context?)
 
-Return a numbered list ranked by viral potential. Be selective — 15 strong picks is better than 30 mediocre ones.`;
+Return a numbered list ranked by viral potential. Be selective — 15 strong picks is better than 30 mediocre ones. Prioritise moments that score Yes on Broad Appeal — these go viral fastest on new channels.`;
 
 export const QUERY_RUNNING_BITS = `Second question — different lens. Instead of individual moments, identify RUNNING BITS, INSIDE JOKES, and RECURRING THEMES that appear multiple times across the stream. These are patterns a keyword scorer cannot detect because they require remembering context across hours.
 
@@ -47,31 +48,34 @@ N. **Short Title — Emotion Type**
 
 Exclude moments already identified as humor picks. Focus on moments where the PERSON is the content, not the joke.`;
 
-export const QUERY_HOT_TAKES = `Fourth question — hot takes and spicy opinions. Identify 5-10 moments where Peanut drops a controversial opinion, a strong take on games/streamers/industry, or a claim likely to drive comment engagement. These are comment-bait clips.
+export const QUERY_FRIEND_ROASTS = `Fourth question — friend roast escalations. Identify 5-10 moments where the friend group roasts each other in back-and-forth chains that escalate. This is the #1 clip type for this channel: one person says something, another one-ups it, the group commits to the bit until someone breaks.
+
+Look for: callouts that get personal, playful ribbing that turns into a full group pile-on, moments where someone gets dunked on repeatedly, or a single devastating comeback that ends the exchange. The key is ESCALATION — not just a single joke, but a chain reaction.
 
 For each, provide EXACTLY this format:
 
 N. **Short Title**
-    *   **Timestamp:** [HH:MM:SS]
-    *   **Hook:** One sentence
-    *   **The take:** What specifically did he say (short paraphrase)
-    *   **Why it's spicy:** What makes this engagement-bait
+    *   **Timestamp:** [HH:MM:SS] (where the roast CHAIN starts — include the setup, not just the punchline)
+    *   **Hook:** One sentence capturing the roast arc
+    *   **Quote:** The best line from the exchange (peak of the escalation)
+    *   **Parties involved:** Who is roasting who
     *   **Setup Needed:** Yes or No
 
-Return 5-10 picks, ranked by how much comment-section chaos they would start.`;
+Return 5-10 picks, ranked by how much the group escalation adds to viral potential.`;
 
-export const QUERY_DRAMA = `Fifth question — drama and conflict moments. Identify 5-10 moments of interpersonal heat: arguments with teammates, callouts against enemies, betrayals, trash-talk exchanges, beefs. This is NOT the same as rage (which is personal frustration) — drama is interpersonal.
+export const QUERY_CRASH_OUTS = `Fifth question — crash-outs and tilt spirals. Identify 5-10 moments where Peanut or a teammate completely loses composure: escalating frustration chains, rage quit threats, increasingly absurd blame deflection, or meltdowns that friends pile on with roasting.
+
+NOT a single loud reaction — look for the ESCALATION ARC: annoyance → frustration → full meltdown. Best crash-outs: someone threatens to quit and keeps playing, or blame excuses get more and more absurd, or tilt + friends roasting the tilt simultaneously.
 
 For each, provide EXACTLY this format:
 
 N. **Short Title**
-    *   **Timestamp:** [HH:MM:SS]
-    *   **Hook:** One sentence
-    *   **Parties involved:** Who is in conflict
-    *   **The conflict:** What's at stake
+    *   **Timestamp:** [HH:MM:SS] (START of the escalation, not just the peak moment)
+    *   **Hook:** One sentence describing the crash-out arc
+    *   **Crash type:** one of: rage-spiral / blame-deflection / rage-quit-threat / tilt-plus-roast / meltdown
     *   **Setup Needed:** Yes or No
 
-Return 5-10 picks, ranked by intensity.`;
+Return 5-10 picks, ranked by how funny the escalation arc is (not just how loud the peak moment is).`;
 
 export const QUERY_ONE_LINERS = `Sixth question — quotable one-liners. Identify 10-15 standalone zingers, punchlines, metaphors, or unexpected phrasings between 5 and 15 words long. These feed thumbnails and title cards — they do not need to be standalone clips.
 
@@ -81,8 +85,9 @@ N. **"The exact quote"**
     *   **Timestamp:** [HH:MM:SS]
     *   **Context:** One sentence of context
     *   **Why it's quotable:** Why this line is memeable / thumbnail-worthy
+    *   **Broad Appeal:** Yes or No (would someone who has never played this game understand why this is funny or surprising?)
 
-Return 10-15 picks. Prioritize lines that would work as title overlays on thumbnails.`;
+Return 10-15 picks. Prioritize lines that score Yes on Broad Appeal — a one-liner that requires zero gaming knowledge to land is worth 3x a game-specific reference.`;
 
 export const QUERY_STORY_OF_STREAM = `Seventh question — single hero pick. Out of everything in this 11-hour stream, what is THE moment? The single thing viewers would tell their friends about. The moment that defines this stream. This becomes our headline Short.
 
@@ -114,20 +119,24 @@ For each candidate, provide EXACTLY this format:
 - Cold open: [HH:MM:SS] (the exact timestamp where the clip should START for the strongest first-3-second hook — usually slightly before the main moment to catch the setup)
 - Natural end: [HH:MM:SS] (the exact timestamp where the clip should END at a natural audio exit, never mid-sentence)
 - Thumbnail: [HH:MM:SS] (single timestamp of the peak facial / reaction / emotional beat that would make the best thumbnail frame)
+- Hook: N/25 (0 = no reason to not swipe, 25 = irresistible first 2 seconds — cold-open promises payoff, visual/audio curiosity, impossible-to-miss)
+- Flow: N/25 (0 = dead air / tangents mid-clip, 25 = every second earns its place, no dips)
+- Engagement: N/25 (0 = passive viewing, 25 = triggers comments, saves, shares — something the viewer will tag a friend on)
+- Trend: N/25 (0 = timeless but dated, 25 = hits a current meme, game moment, or cultural beat people are already talking about)
 - Title drafts:
   1. First title variant (≤60 chars, hook-style)
   2. Second title variant (curiosity gap)
   3. Third title variant (payoff-first)
 
-Be precise with timestamps — these drive clip rendering.`;
+The four rubric dimensions sum to a 0-100 virality rating. Be harsh — 20+ in any dimension means the clip is top-tier along that axis. Be precise with timestamps — these drive clip rendering.`;
 };
 
 export const ALL_QUERIES = [
   { key: "humor", prompt: QUERY_HUMOR },
   { key: "running-bits", prompt: QUERY_RUNNING_BITS },
   { key: "emotional-peaks", prompt: QUERY_EMOTIONAL_PEAKS },
-  { key: "hot-takes", prompt: QUERY_HOT_TAKES },
-  { key: "drama", prompt: QUERY_DRAMA },
+  { key: "friend-roasts", prompt: QUERY_FRIEND_ROASTS },
+  { key: "crash-outs", prompt: QUERY_CRASH_OUTS },
   { key: "one-liners", prompt: QUERY_ONE_LINERS },
   { key: "story-of-stream", prompt: QUERY_STORY_OF_STREAM },
 ] as const;

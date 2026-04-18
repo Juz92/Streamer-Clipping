@@ -30,7 +30,7 @@ npx tsx packages/clips/src/<module>.ts      # Run clips pipeline modules
 **Clips channel:** [Daily Peanut Clips & Highlights](https://www.youtube.com/@DailyPeanutClipsHighlights) — curated Shorts from streams.
 
 ## Pipeline Flow
-`discover → analyze → transcript scan → score & rank → extract clips → render 9:16 → thumbnails → upload metadata → QA → upload`
+`discover → analyze → transcript scan → score & rank → extract clips → whisper captions → render 9:16 → thumbnails → upload metadata → QA → upload`
 
 The automated analysis catches REACTIONS but misses HUMOR. The manual transcript scan is the most important step.
 
@@ -74,7 +74,8 @@ npx tsx packages/clips/src/upload.ts --auth                            # OAuth s
 - `lib/signals.ts` — Transcript (5-tier keyword weights + caps + sentiment) + chat signal detection
 - `lib/audio-analyzer.ts` — Per-frame RMS extraction, spike detection (+20dB threshold), silence-to-loud transitions
 - `lib/chat-parser.ts` — JSONL chat replay parsing, 10s binning, message rate + emoji density
-- `lib/subtitle-parser.ts` — VTT parsing, word-level timestamp extraction
+- `lib/whisper-captions.ts` — faster-whisper transcription for accurate clip-relative word timing
+- `lib/subtitle-parser.ts` — VTT parsing, word-level timestamp extraction, time-range filtering, clean transcript export
 - `lib/scorer.ts` — Composite scoring: signal overlap 35%, chat 25%, audio 20%, virality 15%, duration 5%
 - `lib/manifest.ts` — JSON state tracking, `getJobDir()` with `job-NNN-YYYY-MM-DD` naming
 - `lib/layout.ts` — Gameplay vs talking mode auto-detection via frame motion analysis
@@ -107,11 +108,13 @@ npx tsx packages/clips/src/upload.ts --auth                            # OAuth s
 - Banner MUST fully cover text top-to-bottom
 
 **Karaoke captions (after 2 seconds):**
-- ASS subtitle format with `\kf` per-word timing from VTT
+- ASS subtitle format with `\kf` per-word timing
+- **Timing source**: faster-whisper on each raw clip (accurate clip-relative timing). Falls back to VTT if whisper-captions/ directory doesn't exist.
 - White text (unspoken) turns yellow (spoken) word-by-word
 - Arial Bold size 36, thin black outline, NO background box
 - Gameplay: at join line (Alignment=8, MarginV=752)
 - Talking: bottom third (Alignment=2, MarginV=200)
+- **Why not VTT for timing**: YouTube auto-generated VTT word timestamps have variable 0.3-1.0s drift — inconsistent and unusable for precise karaoke. Whisper gives accurate word alignment.
 
 ## 3-Stage QA Process (MANDATORY — no exceptions)
 
@@ -128,6 +131,7 @@ data/clips/job-NNN-YYYY-MM-DD/
   source/                      # stream.mp4, stream.en.vtt, transcript_clean.txt
   analysis/                    # audio_levels.txt, moments.json, clip-scores.xlsx
   raw-clips/                   # 01-description.mp4 (ranked by virality)
+  whisper-captions/            # 01-description.json (word-level timing per clip)
   shorts/                      # 01-description.mp4 (rendered 9:16)
     karaoke-NN.ass             # Per-clip ASS caption files
     thumbnails/                # yt-NN.jpg + tt-NN.jpg per clip
@@ -145,7 +149,85 @@ Every job generates `upload-metadata.md` with per-clip:
 - Streams: https://www.youtube.com/@TheBurntPeanut
 - Clips: https://www.youtube.com/@DailyPeanutClipsHighlights
 
+**CTA rules (CRITICAL — spammy CTAs hurt trust score and can violate policy):**
+- Channel links are fine. "Subscribe" overlays, mid-video subscribe prompts, and aggressive follow CTAs are not.
+- Descriptions: channel links only. No "smash that subscribe button" language.
+
+## YouTube Shorts Algorithm (verified via NotebookLM analysis of creator research)
+
+### Metric priority order
+1. **Retention** — the primary signal. YouTube measures the graph by three traits: **height** (how many watch at all), **flatness** (how few drop off mid-clip), and **initial dip size** (how many swipe in the first 1-3s). Perfect retention overrules bad engagement.
+2. **Trust Score** — hidden metric. How much YouTube believes pushing your video will keep people on the platform and generate revenue. Low trust = view jail regardless of content quality.
+3. **Audience conversion** — converting new viewers into returning ones. One of the biggest signals for deciding who to push future content to.
+4. **AVD** (Average View Duration) — secondary to retention shape.
+5. **Engagement** — likes/comments/shares can rescue a mediocre clip. Comments are the strongest signal.
+
+### The 30K seed audience
+Every Short gets pushed to ~30,000 people initially (not the 1K-10K commonly cited). If it flatlines in the low thousands, that's a content problem. If it flatlines at 10K-20K, that's a retention/hook problem. **If it plateaus at 30K — that's actually good**: it means the content is good enough to go viral and YouTube is just building audience profiles. The next clip that resonates will get pushed to a much wider pool.
+
+### Broad appeal = fastest growth
+Clips that are funny or compelling to someone with **zero gaming knowledge** go viral faster on a new channel because the algorithm doesn't need audience data to place them. Peanut's best broad-appeal clips: friend roasts, absurd one-liners, crash-outs ("if you're homeless, just buy a home") — anyone gets these. Rust-specific plays only resonate once the channel has built an audience.
+
+**Posting order rule:** Always lead the batch with the broadest-appeal clips. Post gaming-context clips after the channel has an established audience.
+
+### Trust Score and view jail
+- New channels must have "third-level feature eligibility" enabled in YouTube Studio (channel settings) — this is the single make-or-break factor for avoiding zero-view jail.
+- Trust score increases significantly when new viewers become returning viewers. Consistency matters more than individual viral hits.
+- After a first viral clip, YouTube enters a "honeymoon phase" — push more aggressively in the weeks immediately after a breakout.
+- **Post-success trap:** Dropping upload frequency or quality after going viral can permanently reduce reach and restrict pushes to subscribers only.
+
+### Upload cadence
+- **Post one clip per day** from each batch. Don't dump all clips at once — stagger them to maximise each clip's individual seed audience test and allow YouTube to build trust incrementally.
+- Each clip tests against a fresh 30K seed audience. Posting 5 clips in one day splits your data; posting them across 5 days gives each clip a proper test.
+
+### Retention rules for clip construction
+- The flash segment (first 2s) must eliminate the initial dip — show the peak moment immediately, make non-swiping the obvious choice
+- Every second of content must earn its place. Dead air in the middle of a clip = graph dip = algorithm stops pushing it
+- 25-45s total is the sweet spot. The 77s clips from early production had 44% retention — dead air in the middle was the cause
+- Natural endings: the graph must not drop sharply at the end. End on completed sentences, natural pauses, or peak laughter — never mid-word or mid-sentence
+
 ## Peanut-Specific Signals
 Catchphrases added to tier-1 signal detection:
 - **"lock in"** — says before/during highlights and clutch moments
 - **"hooray"** — celebration after doing something cool
+
+---
+
+## Key Learnings (Production Rules)
+
+### 15-Clip Hard Cap (ENFORCED IN PIPELINE)
+- **Maximum 15 clips per job, all categories combined.** This is enforced at three pipeline stages:
+  - `notebooklm-review.ts` — caps output to `--top N` (default 15) before writing `notebooklm-moments.json`
+  - `scan.ts mergeSources()` — sorts by viralityScore and slices to `maxClips` (default 15) before writing `unified-moments.json`
+  - `orchestrate.ts` — passes `--top ${args.top}` (default 15) to both `analyze.ts` and `notebooklm-review.ts`
+- Override with `--top N` on the orchestrator (e.g. `--top 10` for a smaller batch).
+- **Why:** Reviewing 39 clips is unsustainable. Quality over quantity — pick the best 15 and make them excellent.
+
+### Caption Timing (CRITICAL)
+- **YouTube VTT word timestamps are unreliable** — they have variable 0.3-1.0s drift with no consistent offset. Cannot be fixed with a global shift.
+- **Always use faster-whisper** on raw clips for caption timing. It gives clip-relative, audio-accurate word timestamps. Model: `base.en`, ~1-2s per clip.
+- Whisper may misrecognize gaming slang/proper nouns ("Amish" → "Amis") — this is acceptable for karaoke captions since timing accuracy matters more than text accuracy.
+- Caption source priority in render-fast.ts: Whisper JSON > VTT with manifest ranges > VTT with JSON ranges.
+
+### Clip Extraction
+- Raw clips have a 2-second flash segment pre-pended before content. Flash comes from INSIDE the content time range (a "flash forward" to the peak moment).
+- Caption words in the 0-2s range should be filtered out — they're from the flash segment.
+- End times should snap to natural speech boundaries (parse VTT for sentence-ending punctuation near clip end).
+
+### Layout Detection
+- Auto-detected layout is unreliable. Always set `layoutMode` in `unified-moments.json` per clip after QC.
+- Layout priority: CLI override > unified-moments.json > auto-detect.
+
+### Manifest & Phase Tracking
+- Phase progression: `downloaded → analyzed → notebooklm-reviewed → clipped → rendered → uploaded`
+- `precise-clips-manifest.json` tracks actual content ranges (contentStart, contentDur) separately from unified-moments.json (which tracks suggested ranges). The precise manifest is the source of truth for what's actually in each clip.
+
+### Rendering
+- 2-pass render: first pass does layout (gameplay/talking + hook overlay), second pass burns in ASS subtitles.
+- `renderClipFfmpeg` handles both passes. The subtitle pass re-encodes video but copies audio.
+- Non-monotonic DTS warnings from aac encoder are cosmetic and don't affect output.
+
+### Avatar Position
+- Avatar position varies per game and per stream. Always QC frame extraction before batch rendering.
+- RUST: bottom-left corner (avatarRegion `{x:180, y:780, w:420, h:300}`).
+- When in doubt, extract a frame at t=5s from the raw clip and check.

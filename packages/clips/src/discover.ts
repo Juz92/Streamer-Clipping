@@ -115,7 +115,7 @@ async function download(): Promise<void> {
     try {
       run(
         `${YT_DLP} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "${videoPath}" "https://youtube.com/watch?v=${streamId}"`,
-        { timeout: 3_600_000, stdio: "inherit" },
+        { timeout: 0, stdio: "inherit" },
       );
       log.info("Video download complete");
     } catch (err: any) {

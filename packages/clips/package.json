@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
     "@ltx/shared": "*",
     "google-auth-library": "^9.15.1",
     "googleapis": "^171.4.0"

@@ -186,7 +186,7 @@ export function query(
 
 export function deleteNotebook(notebookId: string): void {
   try {
-    run(["notebook", "delete", notebookId, "--yes"], { timeoutMs: 30_000 });
+    run(["notebook", "delete", notebookId, "-y"], { timeoutMs: 30_000 });
   } catch (e) {
     log.warn(`Failed to delete notebook ${notebookId}: ${(e as Error).message}`);
   }
