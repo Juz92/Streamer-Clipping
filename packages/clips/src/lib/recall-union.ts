@@ -165,34 +165,17 @@ export function resolveRecallUnionCandidate(
   return matches[0];
 }
 
-export interface PersistRecallUnionOptions<T extends SemanticRecallCandidate> {
-  jobDir: string;
+export interface SyncRecallUnionPoolOptions {
+  poolPath: string;
   jobId: string;
   streamId: string;
   streamDate: string;
-  semanticCandidates: T[];
-  poolPath: string;
+  union: RecallUnionCandidate[];
 }
 
-export function persistRecallUnion<T extends SemanticRecallCandidate>(
-  options: PersistRecallUnionOptions<T>,
-): {
-  semanticCandidates: Array<T & CandidateIdentity & { recallRoutes: string[] }>;
-  union: RecallUnionCandidate[];
-} {
-  const identified = identifySemanticRecallCandidates(options.jobId, options.semanticCandidates);
-  writeFileSync(join(options.jobDir, "recall-candidates.json"), JSON.stringify(identified, null, 2), "utf-8");
-
-  const signalRecallPath = join(options.jobDir, "signal-recall.json");
-  const scorerPath = existsSync(signalRecallPath) ? signalRecallPath : join(options.jobDir, "moments.json");
-  const scorerMoments = existsSync(scorerPath)
-    ? JSON.parse(readFileSync(scorerPath, "utf-8")) as ScorerRecallMoment[]
-    : [];
-  const union = buildRecallUnion(options.jobId, identified, scorerMoments);
-  writeFileSync(join(options.jobDir, "recall-union.json"), JSON.stringify(union, null, 2), "utf-8");
-
+export function syncRecallUnionToPool(options: SyncRecallUnionPoolOptions): void {
   const now = new Date().toISOString();
-  const pointers: CandidatePointer[] = union.map((candidate) => ({
+  const pointers: CandidatePointer[] = options.union.map((candidate) => ({
     candidateId: candidate.candidateId,
     jobId: candidate.jobId,
     momentId: candidate.momentId,
@@ -222,6 +205,41 @@ export function persistRecallUnion<T extends SemanticRecallCandidate>(
     options.poolPath,
     pointers.filter((candidate) => !immutableIds.has(candidate.candidateId)),
   );
+}
+
+export interface PersistRecallUnionOptions<T extends SemanticRecallCandidate> {
+  jobDir: string;
+  jobId: string;
+  streamId: string;
+  streamDate: string;
+  semanticCandidates: T[];
+  poolPath: string;
+}
+
+export function persistRecallUnion<T extends SemanticRecallCandidate>(
+  options: PersistRecallUnionOptions<T>,
+): {
+  semanticCandidates: Array<T & CandidateIdentity & { recallRoutes: string[] }>;
+  union: RecallUnionCandidate[];
+} {
+  const identified = identifySemanticRecallCandidates(options.jobId, options.semanticCandidates);
+  writeFileSync(join(options.jobDir, "recall-candidates.json"), JSON.stringify(identified, null, 2), "utf-8");
+
+  const signalRecallPath = join(options.jobDir, "signal-recall.json");
+  const scorerPath = existsSync(signalRecallPath) ? signalRecallPath : join(options.jobDir, "moments.json");
+  const scorerMoments = existsSync(scorerPath)
+    ? JSON.parse(readFileSync(scorerPath, "utf-8")) as ScorerRecallMoment[]
+    : [];
+  const union = buildRecallUnion(options.jobId, identified, scorerMoments);
+  writeFileSync(join(options.jobDir, "recall-union.json"), JSON.stringify(union, null, 2), "utf-8");
+
+  syncRecallUnionToPool({
+    poolPath: options.poolPath,
+    jobId: options.jobId,
+    streamId: options.streamId,
+    streamDate: options.streamDate,
+    union,
+  });
 
   return { semanticCandidates: identified, union };
 }

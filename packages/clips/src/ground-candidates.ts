@@ -14,7 +14,12 @@ import { parseVtt } from "./lib/subtitle-parser.js";
 import { parseChatReplay } from "./lib/chat-parser.js";
 import { detectAudioSpikes, parseAudioLevels } from "./lib/audio-analyzer.js";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
-import { buildRecallUnion, type ScorerRecallMoment } from "./lib/recall-union.js";
+import {
+  buildRecallUnion,
+  syncRecallUnionToPool,
+  type RecallUnionCandidate,
+  type ScorerRecallMoment,
+} from "./lib/recall-union.js";
 import {
   buildChatReactionEvidence,
   groundCandidateArc,
@@ -182,7 +187,7 @@ export function buildArcGroundingReport(params: {
   };
 }
 
-export function loadRecallCandidates(streamDir: string, jobId: string): RecallUnionInput[] {
+export function loadRecallCandidates(streamDir: string, jobId: string): RecallUnionCandidate[] {
   const unionPath = join(streamDir, "recall-union.json");
   const semanticPath = join(streamDir, "recall-candidates.json");
   const signalPath = join(streamDir, "signal-recall.json");
@@ -193,7 +198,7 @@ export function loadRecallCandidates(streamDir: string, jobId: string): RecallUn
 
   if (!hasSemantic && !hasScorer) {
     if (existsSync(unionPath)) {
-      return JSON.parse(readFileSync(unionPath, "utf-8")) as RecallUnionInput[];
+      return JSON.parse(readFileSync(unionPath, "utf-8")) as RecallUnionCandidate[];
     }
     throw new Error("Recall artifacts missing; run transcript review or signal recall first");
   }
@@ -220,6 +225,13 @@ function main(): void {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     throw new Error("recall-union.json contains no candidates to ground");
   }
+  syncRecallUnionToPool({
+    poolPath: join(process.cwd(), "data", "clips", "candidate-pool.json"),
+    jobId,
+    streamId: manifest.streamId,
+    streamDate: manifest.uploadDate,
+    union: candidates,
+  });
 
   const transcript = manifest.subtitlePath && existsSync(manifest.subtitlePath)
     ? parseVtt(manifest.subtitlePath).map((cue) => ({

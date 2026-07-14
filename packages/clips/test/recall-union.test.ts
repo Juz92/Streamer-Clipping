@@ -9,6 +9,7 @@ import {
   mergeRecallAnchors,
   persistRecallUnion,
   resolveRecallUnionCandidate,
+  syncRecallUnionToPool,
 } from "../src/lib/recall-union.js";
 import { loadRecallCandidates } from "../src/ground-candidates.js";
 import { loadPool, savePool } from "../src/lib/candidate-pool.js";
@@ -201,6 +202,38 @@ test("grounding refreshes a stale derived union from current recall sources", ()
     assert.equal(artifact.length, 2);
     assert.ok(refreshed.some((candidate) => candidate.momentId === "scorer-current"));
     assert.ok(refreshed.some((candidate) => candidate.categories.includes("wow")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refreshed recall union synchronizes new scorer candidates into the canonical pool", () => {
+  const root = mkdtempSync(join(tmpdir(), "recall-pool-sync-"));
+  const poolPath = join(root, "candidate-pool.json");
+  try {
+    const union = buildRecallUnion("job-sync", [], [{
+      id: "scorer-wow",
+      suggestedStartSec: 100,
+      suggestedEndSec: 140,
+      description: "Current scorer candidate",
+      contentLane: "peanut-plays",
+      payoffType: "wow",
+      laneScore: 0.9,
+    }]);
+
+    syncRecallUnionToPool({
+      poolPath,
+      jobId: "job-sync",
+      streamId: "stream-sync",
+      streamDate: "2026-07-15",
+      union,
+    });
+
+    const pool = loadPool(poolPath);
+    assert.equal(pool.candidates.length, 1);
+    assert.equal(pool.candidates[0].candidateId, "job-sync:scorer-wow");
+    assert.deepEqual(pool.candidates[0].categories, ["peanut-plays", "wow"]);
+    assert.ok(pool.candidates[0].recallRoutes?.includes("payoff:wow"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
