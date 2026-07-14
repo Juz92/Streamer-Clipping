@@ -1,9 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   canonicalizeMoment,
   makeCandidateId,
   chooseCanonicalMomentSource,
+  loadValidatedGroundedPromoted,
 } from "../src/lib/candidate-contract.js";
 
 test("candidateId is stable within a job and independent of mutable source boundaries", () => {
@@ -44,7 +48,12 @@ test("Story Gate and Trim can share one canonical artifact selector", () => {
   const unified = [{ id: "curated-v2-01" }];
   const laneAwareScorer = [{ id: "moment-1", contentLane: "comedy", laneScore: 81 }];
   const legacyScorer = [{ id: "moment-1", rank: 1 }];
+  const groundedPromoted = [{ id: "recall-1", candidateId: "job:recall-1" }];
 
+  assert.equal(
+    chooseCanonicalMomentSource(notebook, unified, laneAwareScorer, groundedPromoted),
+    groundedPromoted,
+  );
   assert.equal(
     chooseCanonicalMomentSource(notebook, unified, laneAwareScorer),
     laneAwareScorer,
@@ -52,4 +61,26 @@ test("Story Gate and Trim can share one canonical artifact selector", () => {
   assert.equal(chooseCanonicalMomentSource(notebook, unified, legacyScorer), notebook);
   assert.equal(chooseCanonicalMomentSource([], unified, legacyScorer), unified);
   assert.equal(chooseCanonicalMomentSource([], [], legacyScorer), legacyScorer);
+});
+
+test("grounded promoted loader rejects stale derivatives", () => {
+  const streamDir = mkdtempSync(join(tmpdir(), "grounded-artifact-"));
+  try {
+    const candidate = { candidateId: "job:a", momentId: "a" };
+    const groundingPath = join(streamDir, "arc-grounding.json");
+    writeFileSync(groundingPath, "{}", "utf-8");
+    writeFileSync(join(streamDir, "recall-union.json"), "[]", "utf-8");
+    writeFileSync(join(streamDir, "grounded-ranking.json"), JSON.stringify({
+      gate: { status: "PASS" },
+      promoted: [candidate],
+    }), "utf-8");
+    writeFileSync(join(streamDir, "grounded-ranked-moments.json"), JSON.stringify([candidate]), "utf-8");
+
+    assert.deepEqual(loadValidatedGroundedPromoted(streamDir), [candidate]);
+    const future = new Date(Date.now() + 5_000);
+    utimesSync(groundingPath, future, future);
+    assert.throws(() => loadValidatedGroundedPromoted(streamDir), /stale/);
+  } finally {
+    rmSync(streamDir, { recursive: true, force: true });
+  }
 });

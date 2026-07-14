@@ -39,6 +39,7 @@ import { loadFeedback, getDurationSweetSpot } from "./lib/feedback.js";
 import {
   canonicalizeMoment,
   chooseCanonicalMomentSource,
+  loadValidatedGroundedPromoted,
 } from "./lib/candidate-contract.js";
 import { applyGroundedQuality, type GroundedQuality } from "./lib/grounded-trim.js";
 
@@ -830,10 +831,12 @@ function loadAutoMoments(
   const scorerMoments = existsSync(momentsPath)
     ? JSON.parse(readFileSync(momentsPath, "utf-8")) as AutoMomentInput[]
     : [];
+  const groundedPromoted = loadValidatedGroundedPromoted<AutoMomentInput>(streamDir);
   const selectedMoments = chooseCanonicalMomentSource(
     notebookMoments,
     unifiedMoments,
     scorerMoments,
+    groundedPromoted,
   );
   const jobId = basename(manifest.jobDir);
   const groundedMoments = selectedMoments.filter((moment) => {
@@ -883,7 +886,7 @@ function loadAutoMoments(
     }
   }
 
-  if (selectedMoments === unifiedMoments) {
+  if (selectedMoments === unifiedMoments || selectedMoments === groundedPromoted) {
     const unified = groundedMoments;
     if (unified.length > 0) {
       return unified.map((m, i) => {

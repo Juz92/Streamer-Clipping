@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { fileURLToPath } from "url";
-import { canonicalizeMoment, chooseCanonicalMomentSource } from "./lib/candidate-contract.js";
+import { canonicalizeMoment, chooseCanonicalMomentSource, loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
 import { loadArcGrounding, type ArcGroundingResult } from "./lib/arc-grounding.js";
 
 const log = {
@@ -59,7 +59,7 @@ export interface PickQuality {
   id: string;
   candidateId: string;
   momentId: string;
-  source: "notebooklm" | "unified";
+  source: "notebooklm" | "unified" | "grounded";
   status: "suggested" | "candidate" | "reserve";
   setupStartSec: number;
   premiseClearSec: number;
@@ -80,7 +80,7 @@ export interface PickQuality {
 export interface PickQualityReport {
   streamId: string;
   generatedAt: string;
-  source: "notebooklm" | "unified";
+  source: "notebooklm" | "unified" | "grounded";
   suggestedRank: number | null;
   reserveRanks: number[];
   picks: PickQuality[];
@@ -234,7 +234,7 @@ function scoreArc(params: {
 function buildGroundedPickQuality(
   moment: SourceMoment,
   rank: number,
-  source: "notebooklm" | "unified",
+  source: "notebooklm" | "unified" | "grounded",
   grounding: ArcGroundingResult,
 ): PickQuality {
   const beats = grounding.beats;
@@ -285,7 +285,7 @@ function buildGroundedPickQuality(
 export function buildPickQuality(
   moment: SourceMoment,
   rank: number,
-  source: "notebooklm" | "unified",
+  source: "notebooklm" | "unified" | "grounded",
   grounding?: ArcGroundingResult,
 ): PickQuality {
   if (grounding) return buildGroundedPickQuality(moment, rank, source, grounding);
@@ -361,7 +361,7 @@ export function buildPickQuality(
 
 export function buildPickQualityReport(
   streamId: string,
-  source: "notebooklm" | "unified",
+  source: "notebooklm" | "unified" | "grounded",
   moments: SourceMoment[],
   groundingByCandidate?: Map<string, ArcGroundingResult>,
 ): PickQualityReport {
@@ -402,9 +402,10 @@ function readNonEmptyMoments(path: string): SourceMoment[] | null {
   return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
 }
 
-function loadSourceMoments(streamDir: string): { source: "notebooklm" | "unified"; moments: SourceMoment[] } {
+function loadSourceMoments(streamDir: string): { source: "notebooklm" | "unified" | "grounded"; moments: SourceMoment[] } {
   const notebookMoments = readNonEmptyMoments(join(streamDir, "notebooklm-moments.json")) ?? [];
   const unifiedMoments = readNonEmptyMoments(join(streamDir, "unified-moments.json")) ?? [];
+  const groundedPromoted = loadValidatedGroundedPromoted<SourceMoment>(streamDir);
   const momentsPath = join(streamDir, "moments.json");
   const scorer = existsSync(momentsPath)
     ? JSON.parse(readFileSync(momentsPath, "utf-8")) as Array<SourceMoment & {
@@ -434,12 +435,12 @@ function loadSourceMoments(streamDir: string): { source: "notebooklm" | "unified
     };
   });
 
-  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments);
+  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments, groundedPromoted);
   if (selected.length === 0) {
-    throw new Error(`No notebooklm-moments.json, unified-moments.json, or moments.json in ${streamDir}`);
+    throw new Error(`No grounded-ranked-moments.json or legacy source moments in ${streamDir}`);
   }
   return {
-    source: selected === notebookMoments ? "notebooklm" : "unified",
+    source: selected === groundedPromoted ? "grounded" : selected === notebookMoments ? "notebooklm" : "unified",
     moments: selected,
   };
 }

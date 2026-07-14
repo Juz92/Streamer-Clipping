@@ -23,7 +23,7 @@ export { blocksMissingQaReview, blocksMissingTranscriptReview } from "./quality-
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "notebooklm-review", "ground-candidates", "pick-quality", "trim", "story-gate", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "review-package", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "ground-candidates", "grounded-rank", "pick-quality", "trim", "story-gate", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "review-package", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface RunRecord {
@@ -151,7 +151,7 @@ function run(cmd: string, label: string, retries = 2): void {
   }
 }
 
-function writeRunReport(streamId: string | undefined, status: "complete" | "failed", error?: unknown): void {
+function writeRunReport(streamId: string | undefined, status: "complete" | "blocked" | "failed", error?: unknown): void {
   if (!streamId) return;
   const dir = findStreamDir(streamId);
   if (!dir) return;
@@ -409,14 +409,31 @@ async function main(): Promise<void> {
   }
 
   // Step 4: Ground every recall candidate against raw source evidence before ranking.
-  // Automatic continuation is deliberately blocked until Issue #8 provides the
-  // grounded ranking gate. Explicit --from pick-quality remains a manual test path.
   if (shouldRun(startIdx, "ground-candidates") && streamId) {
     const groundCmd = `${tsx} ${base}/ground-candidates.ts --stream ${streamId}`;
     if (args.dryRun) log.info(`[DRY RUN] Would run: ${groundCmd}`);
     else run(groundCmd, "Source-aligned candidate grounding");
-    warn("Grounding complete. Automatic ranking/trim is paused until Issue #8; resume explicitly with --from pick-quality only for manual testing.");
-    return;
+  }
+
+  // Step 5: Rank only grounded candidates. Shadow/failed taste gates never promote.
+  if (shouldRun(startIdx, "grounded-rank") && streamId) {
+    const rankCmd = `${tsx} ${base}/grounded-rank.ts --stream ${streamId}`;
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${rankCmd}`);
+    } else {
+      run(rankCmd, "Grounded explainable ranking");
+      const currentDir = findStreamDir(streamId);
+      const reportPath = currentDir ? join(currentDir, "grounded-ranking.json") : "";
+      const report = reportPath && existsSync(reportPath)
+        ? JSON.parse(readFileSync(reportPath, "utf-8")) as { gate?: { status?: string }; promoted?: unknown[] }
+        : null;
+      if (report?.gate?.status !== "PASS" || (report.promoted?.length ?? 0) === 0) {
+        const message = `Grounded ranking stopped automation: gate=${report?.gate?.status ?? "MISSING"}, promoted=${report?.promoted?.length ?? 0}.`;
+        warn(message);
+        writeRunReport(streamId, "blocked", message);
+        return;
+      }
+    }
   }
 
   // Step 5: Pick-quality pass - consume grounded setup/payoff and mark suggested clip.

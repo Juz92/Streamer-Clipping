@@ -16,6 +16,7 @@ import { passesAutomaticDiscoveryFloor } from "./lib/content-lanes.js";
 import {
   canonicalizeMoment,
   chooseCanonicalMomentSource,
+  loadValidatedGroundedPromoted,
   type CandidateIdentity,
 } from "./lib/candidate-contract.js";
 import {
@@ -158,7 +159,8 @@ function loadMoments(streamDir: string, jobId: string): CanonicalMoment[] {
   const notebookMoments = loadMomentArray(join(streamDir, "notebooklm-moments.json"));
   const unifiedMoments = loadMomentArray(join(streamDir, "unified-moments.json"));
   const scorerMoments = loadMomentArray(join(streamDir, "moments.json"));
-  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments);
+  const groundedPromoted = loadValidatedGroundedPromoted<MomentLike>(streamDir);
+  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments, groundedPromoted);
   if (selected.length > 0) {
     return selected.map((moment) => canonicalizeMoment(jobId, moment));
   }
