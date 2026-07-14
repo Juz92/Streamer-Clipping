@@ -8,6 +8,7 @@ import { findStreamDir, loadManifest } from "./lib/manifest.js";
 import { normalizeContentLane } from "./lib/content-lanes.js";
 
 const log = createLogger("grounded-rank");
+const HOLDOUT_K = 5;
 
 export interface RankCandidate {
   candidateId: string;
@@ -130,7 +131,7 @@ function evaluateHoldouts(labels: TasteLabel[]): GroundedRankingReport["gate"]["
     );
     if (train.length === 0 || test.length < 2) return [];
     const model = trainLaneMeans(train);
-    const k = Math.min(5, test.length);
+    const k = Math.min(HOLDOUT_K, test.length);
     const tasteTop = [...test]
       .sort((a, b) => predictTaste(model, b.lane) - predictTaste(model, a.lane))
       .slice(0, k);
@@ -155,8 +156,16 @@ export function buildGroundedRanking(params: {
   const minimumLabels = params.minimumLabels ?? 10;
   const currentStreams = new Set(params.candidates.map((candidate) => candidate.streamId));
   const labels = params.labels.filter((label) => !currentStreams.has(label.streamId));
-  const streamCount = new Set(labels.map((label) => label.streamId)).size;
-  const holdouts = labels.length >= minimumLabels && streamCount >= 2
+  const labelsByStream = new Map<string, number>();
+  for (const label of labels) {
+    labelsByStream.set(label.streamId, (labelsByStream.get(label.streamId) ?? 0) + 1);
+  }
+  const streamCount = labelsByStream.size;
+  const minimumHoldoutLabels = HOLDOUT_K + 1; // One candidate must remain outside the measured top K.
+  const holdoutsReady = streamCount >= 2
+    && [...labelsByStream.values()].every((count) => count >= minimumHoldoutLabels);
+  const requiredLabels = Math.max(minimumLabels, streamCount * minimumHoldoutLabels);
+  const holdouts = labels.length >= requiredLabels && holdoutsReady
     ? evaluateHoldouts(labels)
     : [];
   const meanTasteAt5 = holdouts.length > 0
@@ -164,7 +173,7 @@ export function buildGroundedRanking(params: {
     : null;
   const wins = holdouts.filter((row) => row.tasteAt5 > row.editorialAt5).length;
   const requiredWins = Math.ceil(holdouts.length * 2 / 3);
-  const gateStatus = labels.length < minimumLabels || streamCount < 2
+  const gateStatus = labels.length < requiredLabels || !holdoutsReady
     ? "WAITING_FOR_LABELS" as const
     : holdouts.length > 0 && (meanTasteAt5 ?? 0) >= 0.6 && wins >= requiredWins
       ? "PASS" as const
@@ -199,7 +208,7 @@ export function buildGroundedRanking(params: {
       status: gateStatus,
       labelSource: "private-review",
       labels: labels.length,
-      required: minimumLabels,
+      required: requiredLabels,
       streams: streamCount,
       meanTasteAt5,
       beatsEditorialOnStreams: wins,

@@ -94,10 +94,24 @@ test("held-out private labels gate taste promotion and allow fewer than three", 
   assert.equal(report.promoted[0].marketPrior, 0.4);
 });
 
+test("held-out gate waits until Precision@5 can distinguish rankings", () => {
+  const labels = [];
+  for (const streamId of ["job-a", "job-b"]) {
+    for (let index = 0; index < 5; index++) {
+      labels.push(label(streamId, `peanut-${index}`, "peanut-bits", "keep", "lol"));
+    }
+  }
+
+  const report = buildGroundedRanking({ candidates, grounding, labels, minimumLabels: 10 });
+  assert.equal(report.gate.status, "WAITING_FOR_LABELS");
+  assert.equal(report.gate.required, 12);
+  assert.deepEqual(report.gate.holdouts, []);
+});
+
 test("held-out gate fails when editorial baselines are missing", () => {
   const labels = [];
   for (const streamId of ["job-a", "job-b", "job-c"]) {
-    for (let index = 0; index < 4; index++) {
+    for (let index = 0; index < 6; index++) {
       const { editorialStrength: _ignored, ...item } = label(streamId, `peanut-${index}`, "peanut-bits", "keep", "lol");
       labels.push(item);
     }
