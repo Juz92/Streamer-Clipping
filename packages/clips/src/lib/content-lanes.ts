@@ -9,6 +9,9 @@ export const CONTENT_LANES = [
 
 export type ContentLane = typeof CONTENT_LANES[number];
 
+export const VIEWER_REACTIONS = ["lol", "wow", "smiled", "nothing", "context-missing"] as const;
+export type ViewerReaction = typeof VIEWER_REACTIONS[number];
+
 export const PAYOFF_TYPES = [
   "lol",
   "roast",
@@ -55,6 +58,15 @@ export function normalizeContentLane(value: unknown): ContentLane | undefined {
   const normalized = value.trim().toLowerCase().replace(/[ _]+/g, "-");
   for (let i = 0; i < CONTENT_LANES.length; i++) {
     if (CONTENT_LANES[i] === normalized) return CONTENT_LANES[i];
+  }
+  return undefined;
+}
+
+export function normalizeViewerReaction(value: unknown): ViewerReaction | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  for (let i = 0; i < VIEWER_REACTIONS.length; i++) {
+    if (VIEWER_REACTIONS[i] === normalized) return VIEWER_REACTIONS[i];
   }
   return undefined;
 }

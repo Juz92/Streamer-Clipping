@@ -5,7 +5,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { normalizeContentLane } from "./lib/content-lanes.js";
+import {
+  normalizeContentLane,
+  normalizeViewerReaction,
+  type ViewerReaction,
+} from "./lib/content-lanes.js";
 
 interface CliArgs {
   streamId: string;
@@ -38,7 +42,7 @@ interface ReviewDecision {
     file?: string;
     status?: ReviewStatus;
     lane?: string | null;
-    reaction?: "lol" | "smiled" | "nothing" | "context-missing" | null;
+    reaction?: ViewerReaction | null;
     rejectionReason?: "weak-premise" | "no-payoff" | "needs-context" | "generic-gameplay" | "bad-cut" | "wrong-lane" | "not-funny" | "other" | null;
     coldOpenAccepted?: boolean | null;
     correctedBeats?: CorrectedBeatMap | null;
@@ -180,7 +184,8 @@ export function normalizeReviewRecord(
     const rawLane = item.lane ?? moment?.contentLane;
     const lane = normalizeContentLane(rawLane);
     if (!lane) throw new Error(`Review decision ${candidateId} needs a valid lane label`);
-    if (!item.reaction || !["lol", "smiled", "nothing", "context-missing"].includes(item.reaction)) {
+    const reaction = normalizeViewerReaction(item.reaction);
+    if (!reaction) {
       throw new Error(`Review decision ${candidateId} needs a valid reaction label`);
     }
     if (typeof item.coldOpenAccepted !== "boolean") {
@@ -209,6 +214,7 @@ export function normalizeReviewRecord(
       candidateId,
       momentId,
       lane,
+      reaction,
       rightsStatus,
       publishApproved,
       contentLane: moment?.contentLane,

@@ -5,7 +5,11 @@ import { fileURLToPath } from "url";
 import { createLogger } from "@ltx/shared";
 import { loadArcGrounding } from "./lib/arc-grounding.js";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
-import { normalizeContentLane } from "./lib/content-lanes.js";
+import {
+  normalizeContentLane,
+  normalizeViewerReaction,
+  type ViewerReaction,
+} from "./lib/content-lanes.js";
 
 const log = createLogger("grounded-rank");
 const HOLDOUT_K = 5;
@@ -32,7 +36,7 @@ export interface TasteLabel {
   candidateId: string;
   lane: string;
   status: "keep" | "reject" | "reserve";
-  reaction: "lol" | "smiled" | "nothing" | "context-missing";
+  reaction: ViewerReaction;
   editorialStrength?: number;
 }
 
@@ -90,7 +94,11 @@ function editorialStrength(candidate: RankCandidate): number {
 }
 
 function tasteTarget(label: TasteLabel): number {
-  return label.reaction === "lol" ? 1 : label.reaction === "smiled" ? 0.5 : 0;
+  return label.reaction === "lol" || label.reaction === "wow"
+    ? 1
+    : label.reaction === "smiled"
+      ? 0.5
+      : 0;
 }
 
 function trainLaneMeans(labels: TasteLabel[]): { global: number; lanes: Map<string, number> } {
@@ -263,7 +271,7 @@ function main(): void {
     .filter((decision) =>
       normalizeContentLane(decision.lane) != null
       && ["keep", "reject", "reserve"].includes(decision.status)
-      && ["lol", "smiled", "nothing", "context-missing"].includes(decision.reaction),
+      && normalizeViewerReaction(decision.reaction) != null,
     )
     .map((decision) => {
       const baseline = poolByCandidate.get(decision.candidateId);

@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { chooseReviewPacketClips } from "./quality-gates.js";
-import { CONTENT_LANES } from "./lib/content-lanes.js";
+import { CONTENT_LANES, VIEWER_REACTIONS } from "./lib/content-lanes.js";
 export { chooseReviewPacketClips } from "./quality-gates.js";
 
 interface CliArgs {
@@ -130,7 +130,7 @@ export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], sug
       labelOptions: {
         status: ["keep", "reject", "reserve"],
         lane: CONTENT_LANES.filter((lane) => lane !== "reject"),
-        reaction: ["lol", "smiled", "nothing", "context-missing"],
+        reaction: VIEWER_REACTIONS,
         rejectionReason: ["weak-premise", "no-payoff", "needs-context", "generic-gameplay", "bad-cut", "wrong-lane", "not-funny", "other"],
         arcIntent: ["single-arc", "compilation"],
         rightsStatus: ["cleared", "unresolved", "blocked"],

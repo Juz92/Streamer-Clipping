@@ -68,12 +68,12 @@ test("ranking excludes ungrounded candidates and keeps score families separate i
   assert.equal("viralScore" in report.ranked[0], false);
 });
 
-test("held-out private labels gate taste promotion and allow fewer than three", () => {
+test("held-out private lol/wow labels gate taste promotion and allow fewer than three", () => {
   const labels = [];
   for (const streamId of ["job-a", "job-b", "job-c"]) {
-    labels.push(label(streamId, "peanut-1", "peanut-bits", "keep", "lol"));
-    labels.push(label(streamId, "peanut-2", "peanut-bits", "keep", "lol"));
-    labels.push(label(streamId, "peanut-3", "peanut-bits", "reject", "lol"));
+    labels.push(label(streamId, "peanut-1", "peanut-bits", "keep", "wow"));
+    labels.push(label(streamId, "peanut-2", "peanut-bits", "keep", "wow"));
+    labels.push(label(streamId, "peanut-3", "peanut-bits", "reject", "wow"));
     labels.push(label(streamId, "game-1", "peanut-plays", "reject", "nothing"));
     labels.push(label(streamId, "game-2", "peanut-plays", "reject", "nothing"));
     labels.push(label(streamId, "game-3", "peanut-plays", "reject", "nothing"));

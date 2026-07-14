@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
 import { buildRecallUnion, type RecallUnionCandidate, type SemanticRecallCandidate, type ScorerRecallMoment } from "./lib/recall-union.js";
-import { normalizeContentLane } from "./lib/content-lanes.js";
+import { normalizeContentLane, normalizeViewerReaction } from "./lib/content-lanes.js";
 
 interface LegacySourceMoment {
   momentId: string;
@@ -123,9 +123,7 @@ export function migrateLegacyReviewFeedback(
       const resolved = possible.length === 1 ? possible[0] : null;
       const status = normalizedStatus(decision.status);
       const lane = resolved && decision.momentId ? laneFor(resolved.job, decision.momentId) : null;
-      const reaction = ["lol", "smiled", "nothing", "context-missing"].includes(String(decision.reaction))
-        ? String(decision.reaction)
-        : null;
+      const reaction = normalizeViewerReaction(decision.reaction) ?? null;
       if (!resolved?.candidate || !status || !lane || !reaction || (status === "reject" && !decision.rejectionReason)) {
         quarantined.push({ streamId, ...decision, quarantineReason: "identity-or-label-not-proven" });
         continue;

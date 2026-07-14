@@ -33,7 +33,7 @@ test("captures durable candidate-level taste, cold-open, arc, and boundary label
         momentId: "moment-2",
         status: "keep",
         lane: "peanut-bits",
-        reaction: "lol",
+        reaction: "wow",
         rejectionReason: null,
         coldOpenAccepted: true,
         correctedBeats: beats,
@@ -58,7 +58,7 @@ test("captures durable candidate-level taste, cold-open, arc, and boundary label
   assert.equal(record.decisions[0].candidateId, "job-001:moment-2");
   assert.equal(record.decisions[0].momentId, "moment-2");
   assert.equal(record.decisions[0].lane, "peanut-bits");
-  assert.equal(record.decisions[0].reaction, "lol");
+  assert.equal(record.decisions[0].reaction, "wow");
   assert.equal(record.decisions[0].coldOpenAccepted, true);
   assert.equal(record.decisions[0].arcIntent, "single-arc");
   assert.equal(record.decisions[0].rightsStatus, "unresolved");
