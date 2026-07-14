@@ -103,6 +103,45 @@ test("unseen gameplay lanes stay review-only after the global taste gate passes"
   assert.deepEqual(report.promoted.map((candidate) => candidate.candidateId), ["job-current:peanut"]);
 });
 
+test("legacy visual gameplay nominations stay review-only without a learned gameplay lane", () => {
+  const labels = [];
+  for (const streamId of ["job-a", "job-b"]) {
+    for (let index = 0; index < 4; index++) {
+      labels.push({
+        ...label(streamId, `peanut-${index}`, "peanut-bits", "keep", "wow"),
+        editorialStrength: 0.5,
+      });
+    }
+    for (let index = 0; index < 2; index++) {
+      labels.push({
+        ...label(streamId, `squad-${index}`, "squad-chaos", "reject", "nothing"),
+        editorialStrength: 0.95,
+      });
+    }
+  }
+  const legacyCandidates = candidates.map((candidate) =>
+    candidate.candidateId === "job-current:gameplay"
+      ? {
+          ...candidate,
+          categories: ["peanut-bits", "skill"],
+          recallRoutes: ["lane:visual-gameplay"],
+        }
+      : candidate,
+  );
+
+  const report = buildGroundedRanking({
+    candidates: legacyCandidates,
+    grounding,
+    labels,
+    minimumLabels: 10,
+  });
+  const gameplay = report.ranked.find((candidate) => candidate.candidateId === "job-current:gameplay");
+
+  assert.equal(report.gate.status, "PASS");
+  assert.equal(gameplay?.justinTaste, null);
+  assert.deepEqual(report.promoted.map((candidate) => candidate.candidateId), ["job-current:peanut"]);
+});
+
 test("held-out private lol/wow labels gate taste promotion and allow fewer than three", () => {
   const labels = [];
   for (const streamId of ["job-a", "job-b", "job-c"]) {

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { fileURLToPath } from "url";
 import { createLogger } from "@ltx/shared";
-import { loadArcGrounding } from "./lib/arc-grounding.js";
+import { candidateNeedsVisualProof, loadArcGrounding } from "./lib/arc-grounding.js";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
 import {
   isGameplayContentLane,
@@ -29,6 +29,7 @@ export interface RankCandidate {
   laneScore?: number;
   viralScore?: number;
   routeEvidence?: Array<{ score?: number }>;
+  recallRoutes?: string[];
   marketPrior?: number | null;
 }
 
@@ -120,7 +121,12 @@ function trainLaneMeans(labels: TasteLabel[]): { global: number; lanes: Map<stri
   };
 }
 
-function predictTaste(model: ReturnType<typeof trainLaneMeans>, lane: string): number | null {
+function predictTaste(
+  model: ReturnType<typeof trainLaneMeans>,
+  lane: string,
+  requiresVisualProof = isGameplayContentLane(lane),
+): number | null {
+  if (requiresVisualProof && !isGameplayContentLane(lane)) return null;
   const learned = model.lanes.get(lane);
   if (learned != null) return learned;
   return isGameplayContentLane(lane) ? null : model.global;
@@ -195,12 +201,19 @@ export function buildGroundedRanking(params: {
 
   const ranked = params.candidates
     .filter((candidate) => params.grounding.get(candidate.candidateId)?.status === "GROUNDED")
-    .map((candidate): RankedCandidate => ({
-      ...candidate,
-      editorialStrength: editorialStrength(candidate),
-      justinTaste: model ? predictTaste(model, candidateLane(candidate)) : null,
-      marketPrior: candidate.marketPrior == null ? null : clamp01(candidate.marketPrior),
-    }))
+    .map((candidate): RankedCandidate => {
+      const lane = candidateLane(candidate);
+      const requiresVisualProof = candidateNeedsVisualProof({
+        categories: candidate.categories ?? [],
+        recallRoutes: candidate.recallRoutes ?? [],
+      });
+      return {
+        ...candidate,
+        editorialStrength: editorialStrength(candidate),
+        justinTaste: model ? predictTaste(model, lane, requiresVisualProof) : null,
+        marketPrior: candidate.marketPrior == null ? null : clamp01(candidate.marketPrior),
+      };
+    })
     .sort((a, b) => model
       ? (b.justinTaste ?? 0) - (a.justinTaste ?? 0)
         || b.editorialStrength - a.editorialStrength
