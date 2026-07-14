@@ -49,7 +49,7 @@ The current pipeline has already processed this VOD in `data/clips/job-006-2026-
 | 4 | 01:05:30–01:05:59 | 100 | Gas-canister blow-up threat |
 | 5 | 00:40:00–00:40:21 | 97 | “Where's Peanut?” panic |
 
-These are unreviewed baseline candidates, not accepted winners; final Taste Score still requires blind human labels.
+These are unreviewed finder outputs, not accepted winners and not benchmark truth. They may be shown beside Opus outputs in an exploratory smoke test, but they cannot measure recall or declare a winner.
 
 ### Prompt 1 — humour/social
 
@@ -84,7 +84,7 @@ Use one ClipAnything project and reprompt the completed source. Opus documents r
 
 ## Current status
 
-**CONDITIONAL GO for a 60-minute smoke test; NO-GO for a fair full-VOD benchmark without paid credits.** The smoke test has not been run because there is no authenticated Opus session or API key. Creating an account, accepting OAuth permissions or purchasing credits requires Justin's action. No account or paid integration should be created speculatively.
+**BLOCKED ON VALID SOURCE RANGE AND OPUS SIGN-IN.** Opus can run a 60-minute exploratory smoke test, but the proposed source range has only unreviewed outputs from the flawed finder. First locate independently accepted, source-aligned moments and choose a range containing them. Then Justin must authenticate the Opus web session; no account, API integration or paid credits should be created speculatively.
 
 ## Primary sources
 
