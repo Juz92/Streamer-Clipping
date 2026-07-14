@@ -1,0 +1,1044 @@
+{
+  "version": 1,
+  "status": "awaiting-review",
+  "scoring": {
+    "lol": 1.0,
+    "smiled": 0.5,
+    "nothing": 0.0,
+    "context-missing": 0.0
+  },
+  "metricSupport": {
+    "recallAtK": "label.decision plus candidateId",
+    "boundaryError": "source, beats and correctedBoundary",
+    "arcPassAtK": "label.arcPass",
+    "tasteScoreAtK": "label.tasteScore"
+  },
+  "unresolved": [
+    "Justin taste decision for each record",
+    "objective arc and Beat Map labels for accepted positives",
+    "same-VOD negative links after decisions are known",
+    "corrected boundaries where the source window is rejected or adjusted"
+  ],
+  "records": [
+    {
+      "candidateId": "5CFiXyXf1ho-01",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 1455.0,
+        "endSec": 1500.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-01.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-02",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 7485.0,
+        "endSec": 7530.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-02.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.05759142834433835,
+          "evidence": "He Aura Farmed For Too Long..."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-03",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 5760.0,
+        "endSec": 5805.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-03.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.056689307878706685,
+          "evidence": "It Indeed Did #tarkov #tarkovclips #tarkovfunny #eft #escapefromtarkov #shorts"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-04",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 1842.0,
+        "endSec": 1877.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-04.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Mouth vs. Butthole Confusion: The team misidentifies the monster’s mouth as a butthole, builds tension, then the speaker finally spots the mouth, delivering a funny payoff."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-05",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 3527.0,
+        "endSec": 3572.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-05.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-06",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 2649.0,
+        "endSec": 2680.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-06.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Least Epic Dragon Fight: The narrator calls the dragon battle the least epic ever, then admits they didn’t see the attack coming, providing a humorous self‑deprecating payoff."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-07",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 3165.0,
+        "endSec": 3210.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-07.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.07855335309461522,
+          "evidence": "The Lebron James of Arc Raiders"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-08",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 3300.0,
+        "endSec": 3334.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-08.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Mic glitch and dragon plan: Peanut jokes about mic problems then immediately shifts to planning the next dragon, providing a quick comedic arc."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-09",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 7160.0,
+        "endSec": 7205.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-09.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "5CFiXyXf1ho-10",
+      "source": {
+        "streamId": "5CFiXyXf1ho",
+        "title": "🔴LIVE | ASSASINS CREED BLACK FLAG RESYNCED | AYE LASSIES, WE BE A PIRATE NOW | #BUNGULATE",
+        "startSec": 1263.0,
+        "endSec": 1308.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/5CFiXyXf1ho-10.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Dragon hunt prep: Peanut outlines the objective (defeat the dragon) and the required gear, forming a concise mission‑oriented arc."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-01",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 3925.0,
+        "endSec": 3962.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-01.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Gas canister blow‑up threat: The speaker threatens to blow everyone up with a gas canister, delivering a comedic payoff that showcases Peanut's personality and absurd humor."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-02",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 8955.0,
+        "endSec": 9000.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-02.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.06642696087990563,
+          "evidence": "The Lebron James of Arc Raiders"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-03",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 18247.0,
+        "endSec": 18292.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-03.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-04",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 3622.0,
+        "endSec": 3655.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-04.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Peanut Prohibited in Sports Games: A meta‑commentary about community rules delivers a clear, relatable joke about the ban on Peanut in sports games, ending with a light‑hearted affirmation."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-05",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 9585.0,
+        "endSec": 9630.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-05.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.06759609023639378,
+          "evidence": "He Knew The Rules #tarkov #tarkovclips #tarkovfunny #eft #escapefromtarkov #shorts"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-06",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 895.0,
+        "endSec": 931.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-06.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Lockdown protocol – we’re dead: A quick comedic riff where the crew pretends they’re dead and have no reflection, delivering a clear payoff with the line “WE'RE DEAD.”"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-07",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 16106.0,
+        "endSec": 16151.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-07.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-08",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 1995.0,
+        "endSec": 2040.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-08.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-09",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 3268.0,
+        "endSec": 3298.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-09.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Believable Story of the Killer: A short, absurd story about being killed and the twist that the supposed killer wasn't actually the killer provides a clear narrative arc with a punchy payoff."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "9WJKzVbhFBM-10",
+      "source": {
+        "streamId": "9WJKzVbhFBM",
+        "title": "🔴LIVE | PARTY GAME NIGHT | SLUR SATURDAY | Gimmick X Gingy X John X Pheetus X Habibi #BUNGULATE",
+        "startSec": 1920.0,
+        "endSec": 1965.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/9WJKzVbhFBM-10.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.07707116301536314,
+          "evidence": "Evil Players. ARC Raiders #arcraiders  #theburntpeanut  #gaming  #funnygameplay  #streamclips"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-01",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 2236.0,
+        "endSec": 2265.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-01.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "USA safe word gag: The group picks a safe word, only to be mocked with the punchline “Bad safe word.”"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-02",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 2283.0,
+        "endSec": 2321.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-02.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Surprise fire player: Points and confusion lead to an unexpected fire on a player, delivering a wow reaction."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-03",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 11775.0,
+        "endSec": 11820.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-03.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.06656103231053595,
+          "evidence": "Peanut dumbs it down For Nickmercs"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-04",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 7665.0,
+        "endSec": 7710.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-04.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.11173525541309356,
+          "evidence": "It Indeed Did #tarkov #tarkovclips #tarkovfunny #eft #escapefromtarkov #shorts"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-05",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 4620.0,
+        "endSec": 4665.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-05.mp4",
+      "provenance": [
+        {
+          "route": "reference-retrieval",
+          "routeScore": 0.06056579239882481,
+          "evidence": "Cloakzy got BANNED!? 🤭 #theburntpeanut #cloakzy  #burntpeanut"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-06",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 3655.0,
+        "endSec": 3687.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-06.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Cheat rant continuation: Continuation of the same comedic rant about the teammate’s built‑in color vision cheat, delivering a clear setup and payoff within the window."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-07",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 1110.0,
+        "endSec": 1155.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-07.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-08",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 1041.0,
+        "endSec": 1077.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-08.mp4",
+      "provenance": [
+        {
+          "route": "current-recall",
+          "routeScore": 100.0,
+          "evidence": "Stealing Mark from Dr. Disrespect: Peanut riffs on stealing the best intro creator, builds a quick roast and ends with a laugh, forming a complete comedic arc."
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-09",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 27130.0,
+        "endSec": 27175.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-09.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    },
+    {
+      "candidateId": "xQvGWXh58MQ-10",
+      "source": {
+        "streamId": "xQvGWXh58MQ",
+        "title": "🔴LIVE | LIARS BAR | CELEBRATING AMERICAS BIRTHDAY | PARTY GAMES NIGHT | #BUNGULATE",
+        "startSec": 9290.0,
+        "endSec": 9335.0
+      },
+      "reviewFile": "data/clips/training/blind-three-vod-corpus/clips/xQvGWXh58MQ-10.mp4",
+      "provenance": [
+        {
+          "route": "stratified-control",
+          "routeScore": null,
+          "evidence": "speech-dense random window"
+        }
+      ],
+      "kind": null,
+      "lane": null,
+      "payoffType": null,
+      "contextLevel": null,
+      "visualProofRequired": null,
+      "primaryEvidence": null,
+      "repetition": null,
+      "beats": null,
+      "label": {
+        "decision": "unreviewed",
+        "taste": null,
+        "tasteScore": null,
+        "arcPass": null,
+        "rejectionReason": null
+      },
+      "correctedBoundary": null,
+      "negativeOfCandidateId": null
+    }
+  ]
+}
