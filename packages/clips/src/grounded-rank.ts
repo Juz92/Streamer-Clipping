@@ -129,7 +129,7 @@ function evaluateHoldouts(labels: TasteLabel[]): GroundedRankingReport["gate"]["
     const test = labels.filter((label) =>
       label.streamId === streamId && Number.isFinite(label.editorialStrength),
     );
-    if (train.length === 0 || test.length < 2) return [];
+    if (train.length === 0 || test.length < HOLDOUT_K + 1) return [];
     const model = trainLaneMeans(train);
     const k = Math.min(HOLDOUT_K, test.length);
     const tasteTop = [...test]
@@ -173,11 +173,14 @@ export function buildGroundedRanking(params: {
     : null;
   const wins = holdouts.filter((row) => row.tasteAt5 > row.editorialAt5).length;
   const requiredWins = Math.ceil(holdouts.length * 2 / 3);
+  const completeHoldouts = holdouts.length === streamCount;
   const gateStatus = labels.length < requiredLabels || !holdoutsReady
     ? "WAITING_FOR_LABELS" as const
-    : holdouts.length > 0 && (meanTasteAt5 ?? 0) >= 0.6 && wins >= requiredWins
-      ? "PASS" as const
-      : "FAIL" as const;
+    : !completeHoldouts
+      ? "FAIL" as const
+      : holdouts.length > 0 && (meanTasteAt5 ?? 0) >= 0.6 && wins >= requiredWins
+        ? "PASS" as const
+        : "FAIL" as const;
   const model = gateStatus === "PASS" ? trainLaneMeans(labels) : null;
 
   const ranked = params.candidates

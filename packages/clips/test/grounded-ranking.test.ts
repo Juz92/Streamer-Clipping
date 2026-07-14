@@ -94,6 +94,23 @@ test("held-out private labels gate taste promotion and allow fewer than three", 
   assert.equal(report.promoted[0].marketPrior, 0.4);
 });
 
+test("held-out gate fails when any stream has only five editorially comparable labels", () => {
+  const labels = [];
+  for (const streamId of ["job-a", "job-b", "job-c"]) {
+    labels.push(label(streamId, "peanut-1", "peanut-bits", "keep", "lol"));
+    labels.push(label(streamId, "peanut-2", "peanut-bits", "keep", "lol"));
+    labels.push(label(streamId, "peanut-3", "peanut-bits", "reject", "lol"));
+    labels.push(label(streamId, "game-1", "peanut-plays", "reject", "nothing"));
+    labels.push(label(streamId, "game-2", "peanut-plays", "reject", "nothing"));
+    labels.push(label(streamId, "game-3", "peanut-plays", "reject", "nothing"));
+  }
+  delete labels.find((item) => item.streamId === "job-a" && item.candidateId.endsWith("game-3")).editorialStrength;
+
+  const report = buildGroundedRanking({ candidates, grounding, labels, minimumLabels: 10 });
+  assert.equal(report.gate.status, "FAIL");
+  assert.equal(report.gate.holdouts.length, 2);
+});
+
 test("held-out gate waits until Precision@5 can distinguish rankings", () => {
   const labels = [];
   for (const streamId of ["job-a", "job-b"]) {

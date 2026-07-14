@@ -250,17 +250,20 @@ export function localizeArcFromEvidence(
     .filter((cue) => cue.text.length > 0)
     .sort((a, b) => a.startSec - b.startSec);
   const reactions = input.reactions
-    .filter((event) => within(event.timestampSec, candidate.startSec - 5, candidate.endSec + 10))
+    .filter((event) => within(event.timestampSec, candidate.startSec - 5, candidate.endSec))
     .sort((a, b) => a.timestampSec - b.timestampSec);
 
   const strongestReaction = [...reactions].sort((a, b) => b.strength - a.strength)[0];
   let payoffCue = strongestReaction
-    ? transcript.find((cue) => within(strongestReaction.timestampSec, cue.startSec, cue.endSec, 1.5))
+    ? transcript.find((cue) =>
+      cue.startSec <= candidate.endSec
+      && within(strongestReaction.timestampSec, cue.startSec, cue.endSec, 1.5),
+    )
     : undefined;
 
   if (!payoffCue && transcript.length > 0) {
     payoffCue = [...transcript]
-      .filter((cue) => cue.startSec <= candidate.endSec + 5)
+      .filter((cue) => cue.startSec <= candidate.endSec)
       .sort((a, b) => {
         const scoreDiff = textMatchScore(b, candidate.description) - textMatchScore(a, candidate.description);
         if (scoreDiff !== 0) return scoreDiff;
@@ -290,16 +293,23 @@ export function localizeArcFromEvidence(
     .filter((cue) => !premiseCue || cue.startSec <= premiseCue.startSec)
     .sort((a, b) => Math.abs(a.startSec - candidate.startSec) - Math.abs(b.startSec - candidate.startSec))[0];
   const reactionCue = [...transcript]
-    .filter((cue) => cue.endSec >= payoffCue!.endSec && cue.startSec >= payoffCue!.startSec - 1.5)
+    .filter((cue) =>
+      cue.endSec >= payoffCue!.endSec
+      && cue.startSec >= payoffCue!.startSec - 1.5
+      && cue.startSec <= candidate.endSec,
+    )
     .sort((a, b) => Math.abs(a.endSec - candidate.endSec) - Math.abs(b.endSec - candidate.endSec))[0];
   const reactionEvent = [...reactions]
-    .filter((event) => event.timestampSec >= payoffCue!.startSec)
+    .filter((event) =>
+      event.timestampSec >= payoffCue!.startSec
+      && event.timestampSec <= candidate.endSec,
+    )
     .sort((a, b) => Math.abs(a.timestampSec - candidate.endSec) - Math.abs(b.timestampSec - candidate.endSec))[0];
-  const reactionEndSec = Math.max(
+  const reactionEndSec = Math.min(candidate.endSec, Math.max(
     payoffCue.endSec,
     reactionCue?.endSec ?? payoffCue.endSec,
     reactionEvent ? reactionEvent.timestampSec + 2 : payoffCue.endSec,
-  );
+  ));
 
   return {
     setupStartSec: setupCue?.startSec ?? null,
@@ -394,7 +404,7 @@ export function groundCandidateArc(input: ArcGroundingInput): ArcGroundingResult
   return {
     ...identity,
     status,
-    localizer: input.localizer ?? "source-heuristic-v1",
+    localizer: input.localizer ?? "source-envelope-v2",
     sourceWindow,
     beats,
     gates: { arcComplete, visualProof, contextIndependent },

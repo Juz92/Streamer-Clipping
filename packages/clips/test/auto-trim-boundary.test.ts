@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   snapEndBoundaryEnhanced,
   snapStartBoundaryEnhanced,
+  snapToSpeakerEnd,
+  snapToSpeakerStart,
 } from "../src/lib/enhanced-auto-trim.js";
 
 test("start snapping preserves the grounded setup instead of skipping forward", () => {
@@ -16,6 +18,11 @@ test("start snapping preserves the grounded setup instead of skipping forward", 
 
   assert.equal(snapped.sec, 9);
   assert.equal(snapped.source, "silence");
+});
+
+test("speaker snapping cannot cross authoritative grounded boundaries", () => {
+  assert.equal(snapToSpeakerStart([{ speaker: "a", start: 12, end: 20 }], 10, 5), null);
+  assert.equal(snapToSpeakerEnd([{ speaker: "a", start: 0, end: 8 }], 10, 5), null);
 });
 
 test("end snapping preserves the grounded reaction instead of cutting backward", () => {

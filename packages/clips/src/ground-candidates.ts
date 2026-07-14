@@ -52,7 +52,6 @@ export interface ArcGroundingReport {
   streamId: string;
   jobId: string;
   generatedAt: string;
-  localizer: "source-envelope-v2";
   summary: {
     candidates: number;
     grounded: number;
@@ -104,11 +103,13 @@ function loadCorrectedBeats(streamId: string): Map<string, BeatMap> {
   const path = join(process.cwd(), "data", "clips", "manual-review-feedback.json");
   if (!existsSync(path)) return new Map<string, BeatMap>();
   const parsed = JSON.parse(readFileSync(path, "utf-8")) as {
+    version?: number;
     records?: Array<{
       streamId?: string;
       decisions?: Array<{ candidateId?: string; correctedBeats?: BeatMap | null }>;
     }>;
   };
+  if (parsed.version !== 2) return new Map<string, BeatMap>();
   const corrected = new Map<string, BeatMap>();
   for (const record of parsed.records ?? []) {
     if (record.streamId !== streamId) continue;
@@ -168,7 +169,6 @@ export function buildArcGroundingReport(params: {
     streamId: params.streamId,
     jobId: params.jobId,
     generatedAt: new Date().toISOString(),
-    localizer: "source-envelope-v2",
     summary: {
       candidates: results.length,
       grounded,

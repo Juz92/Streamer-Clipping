@@ -158,6 +158,25 @@ test("source heuristic anchors outer beats to the candidate semantic envelope", 
   assert.equal(proposal.reactionEndSec, 126);
 });
 
+test("source heuristic excludes next-topic evidence beyond the candidate envelope", () => {
+  const boundedCandidate = { ...candidate, startSec: 100, endSec: 126 };
+  const boundedTranscript = [
+    { startSec: 100, endSec: 104, text: "The complete setup." },
+    { startSec: 106, endSec: 110, text: "The premise is clear." },
+    { startSec: 112, endSec: 116, text: "The action escalates." },
+    { startSec: 118, endSec: 120, text: "The punchline lands." },
+    { startSec: 121, endSec: 124, text: "The direct response." },
+    { startSec: 126.1, endSec: 127, text: "A new topic." },
+  ];
+  const proposal = localizeArcFromEvidence({
+    candidate: boundedCandidate,
+    transcript: boundedTranscript,
+    reactions: [{ timestampSec: 126.1, source: "audio", strength: 1, label: "next topic" }],
+  });
+
+  assert.equal(proposal.reactionEndSec, 124);
+});
+
 test("semantic-envelope setup remains before the computed premise", () => {
   const lateEnvelopeCandidate = { ...candidate, startSec: 115, endSec: 126 };
   const proposal = localizeArcFromEvidence({
