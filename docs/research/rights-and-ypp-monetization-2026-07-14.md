@@ -1,5 +1,13 @@
 # Rights and YouTube monetization assessment — 2026-07-14
 
+## Owner decision — accepted 2026-07-14
+
+Justin chose not to make written creator permission or commentary-led editing mandatory. The project will continue with the current captions/layout/arc-editing format and target YouTube monetization while explicitly accepting the documented copyright, Content ID and YPP reused-content risks.
+
+Operational limit: any removal request from TheBurntPeanut/Loaded or any copyright claim triggers automatic unpublishing of the affected clip. The project will not dispute, appeal or counter-notify unless clear written rights evidence covers the claimed material.
+
+This owner decision overrides the risk recommendation below; it does not change the policy findings.
+
 ## Decision summary
 
 The current edits are better than a raw repost, but captions, vertical reframing, split-screen layout, hook text and thumbnails do **not** make the project automatically safe.
@@ -195,8 +203,8 @@ A token AI-voice intro/outro around an otherwise untouched clip is not a reliabl
 
 ---
 
-## Decision required
+## Recorded outcome
 
-Before autonomous public posting, decide whether written creator permission is a hard requirement.
+Written creator permission is **not** a hard requirement. The current caption/layout format remains approved for the project under the explicit Risk-Accepted Publish decision recorded in ADR 0002.
 
-**Recommendation:** yes. Seek written commercial permission and build the commentary-led format in parallel. Keep the current captions/layout system as production polish, not as the sole legal/YPP transformation.
+The mandatory safeguard is the Claim Kill Switch: unpublish on a creator removal request or copyright claim and never dispute without clear written rights evidence.

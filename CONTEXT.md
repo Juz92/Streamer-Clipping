@@ -14,3 +14,5 @@
 - **Hard Negative** — A candidate Justin rejected as `nothing`, `not-funny`, generic gameplay, weak premise, missing context, bad cut, or no payoff.
 - **Reference Bank** — Edited output examples and their structural evidence. Unless aligned to a raw VOD, it is an editorial pattern library rather than source-discovery ground truth.
 - **Shadow Ranker** — A ranker that writes evaluation results but cannot alter production selection until its holdout gate passes.
+- **Risk-Accepted Publish** — Publishing an Editorial Short without written creator permission after the owner has explicitly accepted the documented copyright and YPP risks. It is not a claim of legality, fair dealing, affiliation, or monetization eligibility.
+- **Claim Kill Switch** — The mandatory response to a creator removal request or copyright claim: unpublish the affected Short and do not dispute, appeal, or counter-notify unless clear written rights evidence covers the claimed material.
