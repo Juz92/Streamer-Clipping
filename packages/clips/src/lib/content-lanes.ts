@@ -9,6 +9,12 @@ export const CONTENT_LANES = [
 
 export type ContentLane = typeof CONTENT_LANES[number];
 
+export const GAMEPLAY_CONTENT_LANES = [
+  "wtf-game-moments",
+  "peanut-plays",
+  "the-mission",
+] as const;
+
 export const VIEWER_REACTIONS = ["lol", "wow", "smiled", "nothing", "context-missing"] as const;
 export type ViewerReaction = typeof VIEWER_REACTIONS[number];
 
@@ -69,6 +75,11 @@ export function normalizeViewerReaction(value: unknown): ViewerReaction | undefi
     if (VIEWER_REACTIONS[i] === normalized) return VIEWER_REACTIONS[i];
   }
   return undefined;
+}
+
+export function isGameplayContentLane(value: unknown): boolean {
+  const lane = normalizeContentLane(value);
+  return GAMEPLAY_CONTENT_LANES.some((candidate) => candidate === lane);
 }
 
 export function normalizePayoffType(value: unknown): PayoffType {

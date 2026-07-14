@@ -6,6 +6,7 @@ import { createLogger } from "@ltx/shared";
 import { loadArcGrounding } from "./lib/arc-grounding.js";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
 import {
+  isGameplayContentLane,
   normalizeContentLane,
   normalizeViewerReaction,
   type ViewerReaction,
@@ -120,8 +121,10 @@ function trainLaneMeans(labels: TasteLabel[]): { global: number; lanes: Map<stri
   };
 }
 
-function predictTaste(model: ReturnType<typeof trainLaneMeans>, lane: string): number {
-  return model.lanes.get(lane) ?? model.global;
+function predictTaste(model: ReturnType<typeof trainLaneMeans>, lane: string): number | null {
+  const learned = model.lanes.get(lane);
+  if (learned != null) return learned;
+  return isGameplayContentLane(lane) ? null : model.global;
 }
 
 function meanTarget(labels: TasteLabel[]): number {
@@ -141,7 +144,7 @@ function evaluateHoldouts(labels: TasteLabel[]): GroundedRankingReport["gate"]["
     const model = trainLaneMeans(train);
     const k = Math.min(HOLDOUT_K, test.length);
     const tasteTop = [...test]
-      .sort((a, b) => predictTaste(model, b.lane) - predictTaste(model, a.lane))
+      .sort((a, b) => (predictTaste(model, b.lane) ?? 0) - (predictTaste(model, a.lane) ?? 0))
       .slice(0, k);
     const editorialTop = [...test]
       .sort((a, b) => (b.editorialStrength ?? 0) - (a.editorialStrength ?? 0))
