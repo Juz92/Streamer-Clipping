@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalizeMoment } from "./candidate-contract.js";
+import { isGameplayContentLane } from "./content-lanes.js";
 
 export interface GroundingCandidate {
   candidateId: string;
@@ -124,17 +125,19 @@ function within(value: number, start: number, end: number, tolerance = 0): boole
   return value >= start - tolerance && value <= end + tolerance;
 }
 
-function candidateNeedsVisualProof(candidate: GroundingCandidate): boolean {
-  const values = [...candidate.categories, ...candidate.recallRoutes].map((value) => value.toLowerCase());
-  return values.some((value) =>
-    value === "gameplay"
-    || value === "skill"
-    || value.includes("visual-gameplay")
-    || value.includes("gameplay-only")
-    || value.includes("wtf-game-moments")
-    || value.includes("peanut-plays")
-    || value.includes("the-mission"),
-  );
+export function candidateNeedsVisualProof(
+  candidate: Pick<GroundingCandidate, "categories" | "recallRoutes">,
+): boolean {
+  const values = [...candidate.categories, ...candidate.recallRoutes]
+    .map((value) => value.toLowerCase());
+  return values.some((value) => {
+    const lane = value.replace(/^lane:/, "");
+    return isGameplayContentLane(lane)
+      || value === "gameplay"
+      || value === "skill"
+      || value.includes("visual-gameplay")
+      || value.includes("gameplay-only");
+  });
 }
 
 function beatHasSourceEvidence(

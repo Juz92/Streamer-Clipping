@@ -176,7 +176,7 @@ export function buildArcGroundingReport(params: {
       transcriptCues: params.transcript.length,
       chatReactions: params.reactions.filter((event) => event.source === "chat").length,
       audioReactions: params.reactions.filter((event) => event.source === "audio").length,
-      visualProofs: visualProofs.size,
+      visualProofs: [...visualProofs.values()].filter((proof) => proof.verified).length,
     },
     results,
   };

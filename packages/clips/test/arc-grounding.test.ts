@@ -121,6 +121,33 @@ test("gameplay-only candidates cannot pass without explicit visual proof", () =>
   assert.equal(verified.status, "GROUNDED");
 });
 
+test("unreviewed proof templates stay blocked and are not counted as visual proofs", () => {
+  const gameplayCandidate = {
+    ...candidate,
+    categories: ["peanut-plays"],
+    recallRoutes: ["lane:peanut-plays"],
+  };
+  const report = buildArcGroundingReport({
+    streamId: "stream-1",
+    jobId: candidate.jobId,
+    candidates: [gameplayCandidate],
+    transcript,
+    reactions,
+    visualProofs: new Map([[candidate.candidateId, {
+      candidateId: candidate.candidateId,
+      verified: false,
+      timestampSec: 119,
+      evidenceTimestampsSec: [112, 118, 121],
+      source: "private-frame-timeline-v1",
+      description: "UNREVIEWED",
+    }]]),
+  });
+
+  assert.equal(report.summary.visualProofs, 0);
+  assert.equal(report.results[0].status, "BLOCKED");
+  assert.equal(report.results[0].gates.visualProof, false);
+});
+
 test("source heuristic emits a complete ordered proposal from transcript plus reaction evidence", () => {
   const proposal = localizeArcFromEvidence({ candidate, transcript, reactions });
   const ordered = [
