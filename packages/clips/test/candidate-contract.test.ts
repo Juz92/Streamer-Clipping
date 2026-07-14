@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -63,8 +63,10 @@ test("Story Gate and Trim can share one canonical artifact selector", () => {
   assert.equal(chooseCanonicalMomentSource([], [], legacyScorer), legacyScorer);
 });
 
-test("grounded promoted loader rejects stale derivatives", () => {
-  const streamDir = mkdtempSync(join(tmpdir(), "grounded-artifact-"));
+test("grounded promoted loader rejects stale source artifacts but not later private approval", () => {
+  const root = mkdtempSync(join(tmpdir(), "grounded-artifact-"));
+  const streamDir = join(root, "job-a");
+  mkdirSync(streamDir);
   try {
     const candidate = { candidateId: "job:a", momentId: "a" };
     const groundingPath = join(streamDir, "arc-grounding.json");
@@ -77,10 +79,12 @@ test("grounded promoted loader rejects stale derivatives", () => {
     writeFileSync(join(streamDir, "grounded-ranked-moments.json"), JSON.stringify([candidate]), "utf-8");
 
     assert.deepEqual(loadValidatedGroundedPromoted(streamDir), [candidate]);
+    writeFileSync(join(root, "manual-review-feedback.json"), "{}", "utf-8");
+    assert.deepEqual(loadValidatedGroundedPromoted(streamDir), [candidate]);
     const future = new Date(Date.now() + 5_000);
     utimesSync(groundingPath, future, future);
     assert.throws(() => loadValidatedGroundedPromoted(streamDir), /stale/);
   } finally {
-    rmSync(streamDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });

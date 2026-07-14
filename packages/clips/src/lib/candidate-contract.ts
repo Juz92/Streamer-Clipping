@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "fs";
-import { dirname, join } from "path";
+import { join } from "path";
 
 export interface CandidateIdentity {
   candidateId: string;
@@ -76,7 +76,6 @@ export function loadValidatedGroundedPromoted<T extends CandidateMomentInput>(st
   for (const input of [
     join(streamDir, "arc-grounding.json"),
     join(streamDir, "recall-union.json"),
-    join(dirname(streamDir), "manual-review-feedback.json"),
   ]) {
     if (existsSync(input) && statSync(input).mtimeMs > reportTime) {
       throw new Error(`Grounded ranking is stale relative to ${input}; rerun grounded-rank`);

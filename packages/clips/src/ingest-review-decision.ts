@@ -43,6 +43,8 @@ interface ReviewDecision {
     coldOpenAccepted?: boolean | null;
     correctedBeats?: CorrectedBeatMap | null;
     arcIntent?: ArcIntent | null;
+    rightsStatus?: "cleared" | "unresolved" | "blocked" | null;
+    publishApproved?: boolean | null;
     notes?: string;
   }>;
 }
@@ -194,11 +196,21 @@ export function normalizeReviewRecord(
     if (item.status === "reject" && !item.rejectionReason) {
       throw new Error(`Rejected candidate ${candidateId} needs a rejection reason`);
     }
+    const rightsStatus = item.rightsStatus ?? "unresolved";
+    if (!["cleared", "unresolved", "blocked"].includes(rightsStatus)) {
+      throw new Error(`Review decision ${candidateId} has an invalid rights status`);
+    }
+    const publishApproved = item.publishApproved ?? false;
+    if (typeof publishApproved !== "boolean") {
+      throw new Error(`Review decision ${candidateId} has an invalid publish approval`);
+    }
     return {
       ...item,
       candidateId,
       momentId,
       lane,
+      rightsStatus,
+      publishApproved,
       contentLane: moment?.contentLane,
       payoffType: moment?.payoffType,
       laneScore: moment?.laneScore,

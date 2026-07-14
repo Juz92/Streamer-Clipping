@@ -20,11 +20,13 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, copyFileSync } from "fs";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
 import { createInterface } from "readline";
 import { createLogger, DATA_DIR } from "@ltx/shared";
 import { loadManifest, findStreamDir, saveManifest } from "./lib/manifest.js";
 import { loadPool, recordYoutubePublication } from "./lib/candidate-pool.js";
+import { loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
+import { hasFreshPreUploadPass, publicationBlockers } from "./quality-gates.js";
 import { google, Auth } from "googleapis";
 
 type Platform = "youtube" | "tiktok" | "instagram";
@@ -559,6 +561,7 @@ function hasYouTubeCredentials(): boolean {
   return existsSync(CLIENT_SECRET_PATH);
 }
 
+
 async function main(): Promise<void> {
   const args = parseArgs();
 
@@ -574,9 +577,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  if (args.apiUpload && !args.confirmApiUpload && process.env.DAILY_PEANUT_ALLOW_API_UPLOAD !== "1") {
-    log.error("--api-upload is blocked unless Justin explicitly approves it.");
-    log.error("Re-run with --confirm-api-upload only after per-video approval, or set DAILY_PEANUT_ALLOW_API_UPLOAD=1 for a controlled session.");
+  if (args.apiUpload && !args.confirmApiUpload) {
+    log.error("--api-upload is blocked unless Justin explicitly approves it with --confirm-api-upload.");
     process.exit(1);
   }
 
@@ -621,6 +623,48 @@ async function main(): Promise<void> {
     throw new Error(
       `Distribution blocked: clip(s) ${missingIdentity.map((clip) => clip.clipNum).join(", ")} have no candidateId`,
     );
+  }
+
+  {
+    const promoted = loadValidatedGroundedPromoted<{ candidateId?: string }>(jobDir);
+    const promotedIds = new Set(promoted.map((candidate) => candidate.candidateId));
+    const feedbackPath = join(dirname(jobDir), "manual-review-feedback.json");
+    const feedback = existsSync(feedbackPath)
+      ? JSON.parse(readFileSync(feedbackPath, "utf-8")) as {
+          version?: number;
+          records?: Array<{
+            streamId: string;
+            decisions?: Array<{
+              candidateId: string;
+              status?: string;
+              rightsStatus?: string;
+              publishApproved?: boolean;
+            }>;
+          }>;
+        }
+      : null;
+    const record = feedback?.version === 2
+      ? feedback.records?.find((item) => item.streamId === args.streamId)
+      : undefined;
+    const decisions = new Map((record?.decisions ?? []).map((decision) => [decision.candidateId, decision]));
+    const qualityPassed = hasFreshPreUploadPass(jobDir);
+    const blocked = clipsToUpload.map((clip) => {
+      const decision = decisions.get(clip.candidateId!);
+      return {
+        clip,
+        blockers: publicationBlockers({
+          promoted: promotedIds.has(clip.candidateId),
+          privateStatus: decision?.status,
+          rightsStatus: decision?.rightsStatus,
+          qualityPassed,
+          publishApproved: decision?.publishApproved === true,
+        }),
+      };
+    }).filter((item) => item.blockers.length > 0);
+    if (blocked.length > 0) {
+      throw new Error(`Distribution blocked: ${blocked.map((item) => `clip ${item.clip.clipNum} [${item.blockers.join(", ")}]`).join("; ")}`);
+    }
+    log.info(`Publication gates PASS for ${clipsToUpload.length} clip(s): promoted, private keep, rights, quality, explicit approval.`);
   }
 
   // Verify all video files exist before starting uploads
@@ -823,6 +867,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  log.error("Upload failed:", err.message ?? err);
+  log.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

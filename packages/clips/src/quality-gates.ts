@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { join } from "path";
+
 export interface SignalEventLike {
   timestampSec: number;
   strength: number;
@@ -68,4 +71,64 @@ export function blocksMissingTranscriptReview(state: { reviewed: boolean; dryRun
 
 export function blocksMissingQaReview(state: { qaAvailable: boolean; dryRun?: boolean; allowNoQa?: boolean }): boolean {
   return !state.qaAvailable && !state.dryRun && !state.allowNoQa;
+}
+
+export function selectPromotedEntries<T extends { candidateId?: string }>(entries: T[], promotedCandidateIds: string[]): T[] {
+  const missing = entries.filter((entry) => !entry.candidateId);
+  if (missing.length > 0) throw new Error(`${missing.length} render entry/entries have no candidateId`);
+  const promoted = new Set(promotedCandidateIds);
+  const selected = entries.filter((entry) => promoted.has(entry.candidateId!));
+  if (selected.length === 0) throw new Error("No promoted candidates are available to render");
+  return selected;
+}
+
+export function publicationBlockers(state: {
+  promoted: boolean;
+  privateStatus?: string;
+  rightsStatus?: string;
+  qualityPassed: boolean;
+  publishApproved: boolean;
+}): string[] {
+  const blockers: string[] = [];
+  if (!state.promoted) blockers.push("not-promoted");
+  if (state.privateStatus !== "keep") blockers.push("private-keep-missing");
+  if (state.rightsStatus !== "cleared") blockers.push("rights-unresolved");
+  if (!state.qualityPassed) blockers.push("quality-unresolved");
+  if (!state.publishApproved) blockers.push("private-publish-approval-missing");
+  return blockers;
+}
+
+export function hasFreshPreUploadPass(jobDir: string): boolean {
+  const reportPath = join(jobDir, "preflight-pre-upload.json");
+  const shortsDir = join(jobDir, "shorts");
+  if (!existsSync(reportPath) || !existsSync(shortsDir)) return false;
+  const report = JSON.parse(readFileSync(reportPath, "utf-8")) as {
+    stage?: string;
+    checks?: Array<{ name?: string; severity?: string }>;
+  };
+  const required = [
+    "manifest.videoPath",
+    "manifest.subtitlePath",
+    "moments",
+    "trim-results",
+    "raw-clips",
+    "shorts",
+    "rendered-short-qa",
+    "upload-metadata.md",
+    "upload-metadata.json",
+    "story-gates",
+    "gemini-review",
+  ];
+  const byName = new Map((report.checks ?? []).map((check) => [check.name, check.severity]));
+  if (report.stage !== "pre-upload" || required.some((name) => byName.get(name) !== "PASS")) return false;
+  const reportTime = statSync(reportPath).mtimeMs;
+  const inputs = [
+    join(jobDir, "trim-results.json"),
+    join(jobDir, "upload-metadata.json"),
+    join(jobDir, "upload-metadata.md"),
+    join(jobDir, "story-gates.json"),
+    join(jobDir, "gemini-reviews.json"),
+    ...readdirSync(shortsDir).filter((file) => file.endsWith(".mp4")).map((file) => join(shortsDir, file)),
+  ];
+  return inputs.every((input) => existsSync(input) && statSync(input).mtimeMs <= reportTime);
 }

@@ -15,6 +15,8 @@ import type { Moment } from "./lib/scorer.js";
 import type { LayoutMode } from "./lib/layout.js";
 import { planMotion, buildZoompanFilter, type MotionPlan } from "./lib/motion.js";
 import { insertEmojis, CAPTION_EMOJI_FONT } from "./lib/caption-emoji.js";
+import { loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
+import { selectPromotedEntries } from "./quality-gates.js";
 
 const log = createLogger("render-fast");
 
@@ -807,6 +809,8 @@ function renderClipFfmpeg(
 
 interface TrimResultEntry {
   rank: number;
+  candidateId?: string;
+  momentId?: string;
   clipFile: string;
   flashStart: number;
   flashDuration: number;
@@ -814,6 +818,11 @@ interface TrimResultEntry {
   contentEnd: number;
   contentDuration: number;
   status: string;
+}
+
+function promotedTrimEntries(streamDir: string, entries: TrimResultEntry[]): TrimResultEntry[] {
+  const promoted = loadValidatedGroundedPromoted<{ candidateId?: string; momentId?: string }>(streamDir);
+  return selectPromotedEntries(entries, promoted.map((candidate) => candidate.candidateId!));
 }
 
 interface TrimLayoutState {
@@ -870,7 +879,7 @@ async function renderFromTrimmer(
   ensureDir(tempDir);
 
   // Filter to reviewed clips, optionally further filtered by rank
-  const approvedClips = trimResults.approved
+  const approvedClips = promotedTrimEntries(streamDir, trimResults.approved)
     .filter((c) => c.contentEnd < 9000)
     .filter((c) => !clipFilter || clipFilter.includes(c.rank));
   log.info(`Found ${approvedClips.length} reviewed+approved clips to render`);
@@ -1071,7 +1080,7 @@ async function renderDirect(
   ensureDir(shortsDir);
 
   // Real clips only (contentEnd < 9000), rank <= 24, optionally filtered by rank
-  const clipsToRender = trimResults.approved
+  const clipsToRender = promotedTrimEntries(streamDir, trimResults.approved)
     .filter((c) => c.contentEnd < 9000 && c.rank <= 24)
     .filter((c) => !clipFilter || clipFilter.includes(c.rank));
 
@@ -1585,6 +1594,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  log.error("Fatal error:", err);
+  log.error(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

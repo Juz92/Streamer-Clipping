@@ -61,6 +61,8 @@ test("captures durable candidate-level taste, cold-open, arc, and boundary label
   assert.equal(record.decisions[0].reaction, "lol");
   assert.equal(record.decisions[0].coldOpenAccepted, true);
   assert.equal(record.decisions[0].arcIntent, "single-arc");
+  assert.equal(record.decisions[0].rightsStatus, "unresolved");
+  assert.equal(record.decisions[0].publishApproved, false);
   assert.deepEqual(record.decisions[0].correctedBeats, beats);
 });
 

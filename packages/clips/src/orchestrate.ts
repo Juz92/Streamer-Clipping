@@ -503,7 +503,7 @@ async function main(): Promise<void> {
 
   // Step 8: Render (produce 9:16 shorts)
   if (shouldRun(startIdx, "render") && streamId) {
-    const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --all`;
+    const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --from-trimmer --all`;
 
     if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${renderCmd}`);
@@ -557,10 +557,6 @@ async function main(): Promise<void> {
     }
   }
 
-  if (streamId && !args.dryRun && shouldRun(startIdx, "thumbnails")) {
-    run(`${tsx} ${base}/preflight.ts --stream ${streamId} --stage pre-upload${args.warnOnlyGates ? " --warn-only" : ""}`, "Pre-upload QA gate");
-  }
-
   // Step 10: Generate thumbnails (YT + TikTok variants per clip).
   if (shouldRun(startIdx, "thumbnails") && streamId) {
     const thumbsCmd = `${tsx} ${base}/generate-thumbnails.ts --stream ${streamId}`;
@@ -611,6 +607,7 @@ async function main(): Promise<void> {
     } else if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${uploadCmd}`);
     } else {
+      run(`${tsx} ${base}/preflight.ts --stream ${streamId} --stage pre-upload${args.warnOnlyGates ? " --warn-only" : ""}`, "Pre-upload QA gate");
       run(uploadCmd, "Generate manual upload packages for YouTube, TikTok, Instagram");
     }
   }

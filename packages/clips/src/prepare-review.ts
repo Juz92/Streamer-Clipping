@@ -133,6 +133,7 @@ export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], sug
         reaction: ["lol", "smiled", "nothing", "context-missing"],
         rejectionReason: ["weak-premise", "no-payoff", "needs-context", "generic-gameplay", "bad-cut", "wrong-lane", "not-funny", "other"],
         arcIntent: ["single-arc", "compilation"],
+        rightsStatus: ["cleared", "unresolved", "blocked"],
       },
       decisions: clips.map((clip) => ({
         rank: clip.rank,
@@ -146,6 +147,8 @@ export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], sug
         coldOpenAccepted: null,
         correctedBeats: null,
         arcIntent: "single-arc",
+        rightsStatus: "unresolved",
+        publishApproved: false,
         notes: "",
       })),
     },

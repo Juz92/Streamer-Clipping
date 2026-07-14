@@ -31,6 +31,8 @@ test("parses generated metadata titles and seeds review decision template", () =
   assert.equal(decision.decisions[0].coldOpenAccepted, null);
   assert.equal(decision.decisions[0].correctedBeats, null);
   assert.equal(decision.decisions[0].arcIntent, "single-arc");
+  assert.equal(decision.decisions[0].rightsStatus, "unresolved");
+  assert.equal(decision.decisions[0].publishApproved, false);
   assert.throws(() => buildDecisionTemplate("stream-1", [
     { rank: 1, candidateId: "job-001:moment-1", momentId: "wrong", file: "01-a.mp4", title: "Bad", thumb: null },
   ], null), /does not match/);
