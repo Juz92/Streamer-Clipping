@@ -1,0 +1,13 @@
+import { execFileSync } from "child_process";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "fs";
+import { extname, join, relative, resolve } from "path";
+import { fileURLToPath } from "url";
+const ROOT = fileURLToPath(new URL("../../..", import.meta.url)); const OUT_DIR=join(ROOT,"packages","remotion",".tmp","qa"); const REPORT_PATH=join(OUT_DIR,"media-preflight.json");
+const argTargets=process.argv.slice(2).filter(Boolean).map(p=>resolve(ROOT,p));
+const DEFAULT_DIRS=[join(ROOT,"packages","remotion","public"),join(ROOT,"public")];
+const mediaExt=new Set([".mp4",".mov",".m4v",".webm",".mkv",".mp3",".m4a",".wav",".aac"]);
+function walk(path,out=[]){ if(!existsSync(path)) return out; const st=statSync(path); if(st.isFile()){ if(mediaExt.has(extname(path).toLowerCase())) out.push(path); return out;} for(const name of readdirSync(path)){ const p=join(path,name); const s=statSync(p); if(s.isDirectory()){ if(['node_modules','.git','.tmp','dist','build'].includes(name)) continue; walk(p,out);} else if(mediaExt.has(extname(p).toLowerCase())) out.push(p);} return out;}
+function probe(path){ try{return JSON.parse(execFileSync("ffprobe",["-v","error","-show_entries","stream=index,codec_type,width,height,sample_rate,duration:format=duration,size","-of","json",path],{encoding:"utf-8",timeout:10000}));}catch(e){return {error:e?.message||String(e)}}}
+mkdirSync(OUT_DIR,{recursive:true}); const targets=argTargets.length?argTargets:DEFAULT_DIRS; const files=targets.flatMap(d=>walk(d)).slice(0,200);
+const media=files.map(path=>{ const p=probe(path); const video=p.streams?.find(s=>s.codec_type==='video'); const audio=p.streams?.find(s=>s.codec_type==='audio'); const warnings=[]; if(p.error) warnings.push('ffprobe failed or timed out'); if(!video&&!audio) warnings.push('no video/audio stream detected'); if(video&&(!video.width||!video.height)) warnings.push('video dimensions missing'); return {path,relativePath:relative(ROOT,path),duration:Number(p.format?.duration??video?.duration??audio?.duration??0),size:Number(p.format?.size??0),width:video?.width,height:video?.height,hasVideo:Boolean(video),hasAudio:Boolean(audio),warnings}; });
+const warnings=media.flatMap(m=>m.warnings.map(w=>`${m.relativePath}: ${w}`)); const report={ok:warnings.length===0,root:ROOT,checkedAt:new Date().toISOString(),scannedTargets:targets,count:media.length,media,warnings,note: argTargets.length? 'explicit targets scanned' : 'default scan only checks public asset folders; pass paths for job-specific preflight'}; writeFileSync(REPORT_PATH,JSON.stringify(report,null,2)); console.log(`Media preflight wrote ${REPORT_PATH} (${media.length} file(s), ${warnings.length} warning(s))`); if(warnings.length) process.exitCode=1;

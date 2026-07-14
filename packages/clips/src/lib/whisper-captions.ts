@@ -42,6 +42,12 @@ export function transcribeClip(
   outputPath: string,
   options: TranscribeOptions = {},
 ): WhisperWord[] {
+  // Graceful fallback if faster-whisper is not installed
+  if (!checkWhisperAvailable()) {
+    log.warn("faster-whisper not available — skipping transcription. Install: pip install faster-whisper");
+    return [];
+  }
+
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
   const script = `

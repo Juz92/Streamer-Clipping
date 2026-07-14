@@ -29,9 +29,15 @@ export interface PaddedWindow {
   contentEnd: number;
   /** contentEnd - contentStart, kept for convenience. */
   contentDuration: number;
+  /** Explicit edit structure for Shorts pacing. */
+  segments: {
+    flash: { start: number; end: number; duration: number };
+    setup: { start: number; end: number; duration: number };
+    payoff: { start: number; end: number; duration: number };
+  };
   /** Per-step notes so callers can surface "why this boundary" in logs. */
   notes: {
-    flashSource: "peak-rms" | "center-fallback";
+    flashSource: "peak-rms" | "center-fallback" | "notebooklm";
     startSnap: "speaker" | "silence" | "punctuation" | "signal";
     endSnap: "speaker" | "punctuation" | "silence" | "signal";
   };
@@ -57,6 +63,9 @@ export interface ComputeAutoTrimOptions {
   minSilenceMs?: number;
   /** Flash duration — only change for A/B tests. */
   flashWindowSec?: number;
+  /** Optional: NotebookLM-provided flash timestamp (clip-relative seconds).
+   *  When set, overrides peak-RMS flash detection. */
+  forcedFlashStartSec?: number;
 }
 
 /**
@@ -262,14 +271,21 @@ export function computeAutoTrim(opts: ComputeAutoTrimOptions): PaddedWindow {
   const clampedSignalStart = Math.max(0, Math.min(signalStartInClipSec, paddedDurationSec));
   const clampedSignalEnd = Math.max(clampedSignalStart, Math.min(signalEndInClipSec, paddedDurationSec));
 
-  // Flash: 2s peak-RMS window inside the signal range.
-  const flash = audioSamples
-    ? findPeakRmsWindow(audioSamples, clampedSignalStart, clampedSignalEnd, flashWindowSec)
-    : {
-        startSec: Math.max(0, (clampedSignalStart + clampedSignalEnd) / 2 - flashWindowSec / 2),
-        endSec: Math.min(paddedDurationSec, (clampedSignalStart + clampedSignalEnd) / 2 + flashWindowSec / 2),
-        source: "center-fallback" as const,
-      };
+  // Flash: 2s peak-RMS window inside the signal range, OR forced flash from NotebookLM.
+  let flash: { startSec: number; endSec: number; source: "peak-rms" | "center-fallback" | "notebooklm" };
+  if (opts.forcedFlashStartSec != null) {
+    const fs = Math.max(0, Math.min(opts.forcedFlashStartSec, paddedDurationSec - flashWindowSec));
+    flash = { startSec: fs, endSec: fs + flashWindowSec, source: "notebooklm" };
+  } else if (audioSamples) {
+    const result = findPeakRmsWindow(audioSamples, clampedSignalStart, clampedSignalEnd, flashWindowSec);
+    flash = { ...result, source: result.source };
+  } else {
+    flash = {
+      startSec: Math.max(0, (clampedSignalStart + clampedSignalEnd) / 2 - flashWindowSec / 2),
+      endSec: Math.min(paddedDurationSec, (clampedSignalStart + clampedSignalEnd) / 2 + flashWindowSec / 2),
+      source: "center-fallback",
+    };
+  }
 
   // Content boundaries. Priority for each edge:
   //   1. Speaker-turn change (cleanest cut — lands between sentences across speakers)
@@ -317,12 +333,23 @@ export function computeAutoTrim(opts: ComputeAutoTrimOptions): PaddedWindow {
     contentEnd = clampedSignalEnd;
   }
 
+  const flashDuration = flash.endSec - flash.startSec;
+  const contentDuration = contentEnd - contentStart;
+  const setupDuration = Math.max(0, Math.min(8, Math.min(contentDuration * 0.35, 8)));
+  const setupEnd = Math.min(contentEnd, contentStart + setupDuration);
+  const payoffStart = Math.min(contentEnd, Math.max(contentStart, setupEnd));
+
   return {
     flashStart: flash.startSec,
-    flashDuration: flash.endSec - flash.startSec,
+    flashDuration,
     contentStart,
     contentEnd,
-    contentDuration: contentEnd - contentStart,
+    contentDuration,
+    segments: {
+      flash: { start: flash.startSec, end: flash.endSec, duration: flashDuration },
+      setup: { start: contentStart, end: setupEnd, duration: Math.max(0, setupEnd - contentStart) },
+      payoff: { start: payoffStart, end: contentEnd, duration: Math.max(0, contentEnd - payoffStart) },
+    },
     notes: {
       flashSource: flash.source,
       startSnap: startSource,

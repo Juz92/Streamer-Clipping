@@ -10,7 +10,7 @@
  *   npx tsx packages/clips/src/upload.ts --stream <id> --platform tiktok        # TikTok only
  *   npx tsx packages/clips/src/upload.ts --stream <id> --clips 1,3              # Specific clips only
  *   npx tsx packages/clips/src/upload.ts --stream <id> --dry-run                # Preview without writing
- *   npx tsx packages/clips/src/upload.ts --stream <id> --api-upload             # Use API upload (when configured)
+ *   npx tsx packages/clips/src/upload.ts --stream <id> --api-upload --confirm-api-upload  # Use API upload (explicit approval required)
  *   npx tsx packages/clips/src/upload.ts --auth                                 # YouTube OAuth setup (for future API use)
  *
  * API upload requirements (only with --api-upload):
@@ -23,7 +23,8 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSy
 import { join, basename } from "path";
 import { createInterface } from "readline";
 import { createLogger, DATA_DIR } from "@ltx/shared";
-import { loadManifest, findStreamDir } from "./lib/manifest.js";
+import { loadManifest, findStreamDir, saveManifest } from "./lib/manifest.js";
+import { loadPool, recordYoutubePublication } from "./lib/candidate-pool.js";
 import { google, Auth } from "googleapis";
 
 type Platform = "youtube" | "tiktok" | "instagram";
@@ -39,6 +40,7 @@ const GAMING_CATEGORY_ID = "20";
 
 interface ClipMeta {
   clipNum: number;
+  momentId?: string;
   slug: string;
   ytTitle: string;
   ytDescription: string;
@@ -54,12 +56,13 @@ interface UploadArgs {
   dryRun: boolean;
   authOnly: boolean;
   apiUpload: boolean;
+  confirmApiUpload: boolean;
   platforms: Platform[];
 }
 
 function parseArgs(): UploadArgs {
   const args = process.argv.slice(2);
-  const result: UploadArgs = { clips: [], all: true, dryRun: false, authOnly: false, apiUpload: false, platforms: [...ALL_PLATFORMS] };
+  const result: UploadArgs = { clips: [], all: true, dryRun: false, authOnly: false, apiUpload: false, confirmApiUpload: false, platforms: [...ALL_PLATFORMS] };
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--stream" && args[i + 1]) {
@@ -76,6 +79,8 @@ function parseArgs(): UploadArgs {
       }
     } else if (args[i] === "--api-upload") {
       result.apiUpload = true;
+    } else if (args[i] === "--confirm-api-upload") {
+      result.confirmApiUpload = true;
     } else if (args[i] === "--dry-run") {
       result.dryRun = true;
     } else if (args[i] === "--auth") {
@@ -561,7 +566,13 @@ async function main(): Promise<void> {
   }
 
   if (!args.streamId) {
-    log.error("Usage: npx tsx packages/clips/src/upload.ts --stream <id> [--platform youtube|tiktok|instagram|all] [--clips 1,2] [--dry-run]");
+    log.error("Usage: npx tsx packages/clips/src/upload.ts --stream <id> [--platform youtube|tiktok|instagram|all] [--clips 1,2] [--dry-run] [--api-upload --confirm-api-upload]");
+    process.exit(1);
+  }
+
+  if (args.apiUpload && !args.confirmApiUpload && process.env.DAILY_PEANUT_ALLOW_API_UPLOAD !== "1") {
+    log.error("--api-upload is blocked unless Justin explicitly approves it.");
+    log.error("Re-run with --confirm-api-upload only after per-video approval, or set DAILY_PEANUT_ALLOW_API_UPLOAD=1 for a controlled session.");
     process.exit(1);
   }
 
@@ -582,6 +593,15 @@ async function main(): Promise<void> {
 
   // Parse metadata
   const allClips = parseUploadMetadata(metadataPath);
+  const trimResultsPath = join(jobDir, "trim-results.json");
+  if (existsSync(trimResultsPath)) {
+    const trimResults = JSON.parse(readFileSync(trimResultsPath, "utf-8")) as {
+      approved?: Array<{ rank: number; momentId?: string }>;
+    };
+    for (const clip of allClips) {
+      clip.momentId = trimResults.approved?.find((item) => item.rank === clip.clipNum)?.momentId;
+    }
+  }
   const clipsToUpload = args.all
     ? allClips
     : allClips.filter((c) => args.clips.includes(c.clipNum));
@@ -660,11 +680,30 @@ async function main(): Promise<void> {
         const youtube = google.youtube({ version: "v3", auth: oauth2 });
         for (const { meta, videoPath } of uploadPlan) {
           try {
+            if (!meta.momentId) {
+              throw new Error(`Clip ${meta.clipNum} has no source moment in trim-results.json`);
+            }
+            const poolPath = join(DATA_DIR, "clips", "candidate-pool.json");
+            const jobId = basename(jobDir);
+            const sourceMatches = loadPool(poolPath).candidates.filter(
+              (candidate) => candidate.jobId === jobId && candidate.momentId === meta.momentId,
+            );
+            if (sourceMatches.length !== 1 || sourceMatches[0].startSec == null || sourceMatches[0].endSec == null) {
+              throw new Error(`Clip ${meta.clipNum} has no unique source-VOD window`);
+            }
+
             const videoId = await uploadToYouTube(youtube, videoPath, meta);
+            const uploadedAt = new Date().toISOString();
+            recordYoutubePublication(poolPath, {
+              jobId,
+              momentId: meta.momentId,
+              videoId,
+              postedAt: uploadedAt,
+            });
             allResults.push({
               clipNum: meta.clipNum, platform: "youtube", id: videoId,
               url: `https://youtube.com/shorts/${videoId}`, method: "api",
-              uploadedAt: new Date().toISOString(), privacyStatus: "private",
+              uploadedAt, privacyStatus: "private",
             });
           } catch (err: any) {
             log.error(`[YouTube] Failed clip ${meta.clipNum}: ${err.message}`);
@@ -765,6 +804,11 @@ async function main(): Promise<void> {
 
   writeFileSync(uploadLogPath, JSON.stringify(existingLog, null, 2), "utf-8");
   log.info(`\nUpload log saved to ${uploadLogPath}`);
+
+  if (apiUploads.length > 0) {
+    manifest.phase = "uploaded";
+    saveManifest(manifest);
+  }
 }
 
 main().catch((err) => {

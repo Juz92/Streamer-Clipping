@@ -20,6 +20,7 @@ export interface StreamManifest {
   notebookLMReviewPath?: string;
   notebookLMReviewedAt?: string;
   whisperCaptionsPath?: string | null;
+  heatmapPath?: string | null;
   phase:
     | "downloaded"
     | "analyzed"

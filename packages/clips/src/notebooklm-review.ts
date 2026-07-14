@@ -1,5 +1,5 @@
-import { existsSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { existsSync, writeFileSync, mkdirSync, readFileSync } from "fs";
+import { join, dirname } from "path";
 import { createLogger, DATA_DIR } from "@ltx/shared";
 import { loadManifest, saveManifest } from "./lib/manifest.js";
 import { writeCleanTranscript } from "./lib/subtitle-parser.js";
@@ -9,8 +9,9 @@ import {
   query,
   deleteNotebook,
   isNlmAvailable,
+  reauth,
 } from "./lib/notebooklm-client.js";
-import { ALL_QUERIES, QUERY_ENRICHMENT_TEMPLATE } from "./lib/notebooklm-queries.js";
+import { ALL_QUERIES, QUERY_ENRICHMENT_TIMESTAMPS, QUERY_ENRICHMENT_RUBRIC } from "./lib/notebooklm-queries.js";
 import {
   parseHumorQuery,
   parseRunningBitsQuery,
@@ -26,6 +27,7 @@ import {
   type SourceQuery,
 } from "./lib/notebooklm-parser.js";
 import { scorePick } from "./lib/notebooklm-scorer.js";
+import { loadHeatmap, scoreHeatmapBonus, type HeatPoint } from "./lib/heatmap-extractor.js";
 import {
   appendCandidates,
   removeByJobId,
@@ -167,6 +169,9 @@ async function main(): Promise<void> {
     saveManifest(manifest);
   }
 
+  // Re-auth before queries — cookies may expire during long upload wait
+  reauth();
+
   // Step 4: Run queries 1-7 (unless --enrich-only or --queries)
   const queriesToRun = cli.queries
     ? ALL_QUERIES.filter((_, i) => cli.queries!.includes(i + 1))
@@ -179,7 +184,7 @@ async function main(): Promise<void> {
     for (const q of queriesToRun) {
       log.info(`Running query: ${q.key}`);
       try {
-        const response = query(notebookId, q.prompt, { conversationId });
+        const response = await queryWithRetry(notebookId, q.prompt, { conversationId });
         conversationId ??= response.value.conversation_id;
 
         // Route to parser based on query key
@@ -211,6 +216,7 @@ async function main(): Promise<void> {
         }
 
         log.info(`Query ${q.key}: ${picks.length} picks`);
+        await sleep(8000); // 8s between queries to avoid Google rate limits
         picksBySource.set(q.key, picks);
       } catch (e) {
         log.warn(`Query ${q.key} failed: ${(e as Error).message}. Continuing.`);
@@ -224,55 +230,115 @@ async function main(): Promise<void> {
   const deduped = dedupePicks(allPicks);
   log.info(`Total ${allPicks.length} picks → ${deduped.length} after dedup`);
 
-  // Step 6: Enrichment (query 8)
+  // Step 6: Enrichment — 2-pass approach (timestamps first, then rubric)
+  const enrichedData = new Map<number, { coldOpenSec?: number; naturalEndSec?: number; thumbnailSec?: number; flashSec?: number; titleDrafts?: string[]; rubric?: any }>();
+
   if (deduped.length > 0 && (!cli.queries || cli.queries.includes(8))) {
-    const candidates = deduped.map((p, i) => ({
+    // Pass 1: Get timestamps (coldOpen, flash, naturalEnd, thumbnail)
+    const candidatesForTimestamps = deduped.map((p, i) => ({
       id: i + 1,
       timestamp: formatTimestamp(p.startSec),
       hook: p.hook.slice(0, 80),
     }));
-    const enrichPrompt = QUERY_ENRICHMENT_TEMPLATE(candidates);
-    log.info(`Running enrichment query for ${candidates.length} candidates`);
+    const timestampPrompt = QUERY_ENRICHMENT_TIMESTAMPS(candidatesForTimestamps);
+    await sleep(15000); // 15s before enrichment to avoid rate limits
+    log.info(`Running enrichment pass 1 (timestamps) for ${candidatesForTimestamps.length} candidates`);
     try {
-      const response = query(notebookId, enrichPrompt, { conversationId });
-      const enrichments = parseEnrichmentQuery(response);
-
-      // Back-fill enrichment onto deduped picks
+      const tsResponse = await queryWithRetry(notebookId, timestampPrompt, { conversationId });
+      // DEBUG: log raw enrichment response
+      writeFileSync(
+        join(manifest.jobDir, "enrichment-raw-response.json"),
+        JSON.stringify(tsResponse, null, 2),
+      );
+      const timestampRecords = parseEnrichmentQuery(tsResponse);
       let matched = 0;
-      let unmatched = 0;
-      let withRubric = 0;
-      for (const e of enrichments) {
-        const pick = deduped.find(
-          (p) => Math.abs(p.startSec - e.anchorStartSec) <= 30,
-        );
-        if (!pick) {
-          unmatched++;
-          continue;
-        }
+      for (const rec of timestampRecords) {
+        const pick = deduped.find((p) => Math.abs(p.startSec - rec.anchorStartSec) <= 30);
+        if (!pick) continue;
         matched++;
-        if (e.coldOpenSec) (pick as any).coldOpenSec = e.coldOpenSec;
-        if (e.naturalEndSec) {
-          (pick as any).naturalEndSec = e.naturalEndSec;
-          pick.endSec = e.naturalEndSec;
-        }
-        if (e.thumbnailSec) (pick as any).thumbnailSec = e.thumbnailSec;
-        if (e.titleDrafts.length) (pick as any).titleDrafts = e.titleDrafts;
-        if (e.rubric) {
-          (pick as any).rubric = e.rubric;
-          withRubric++;
-        }
+        const idx = deduped.indexOf(pick);
+        enrichedData.set(idx, {
+          coldOpenSec: rec.coldOpenSec,
+          naturalEndSec: rec.naturalEndSec,
+          thumbnailSec: rec.thumbnailSec,
+          flashSec: rec.flashSec,
+        });
+        if (rec.naturalEndSec) pick.endSec = rec.naturalEndSec;
       }
-      if (withRubric > 0) {
-        log.info(`Rubric extracted for ${withRubric}/${matched} matched picks`);
-      }
-      log.info(`Enrichment: ${matched} matched, ${unmatched} unmatched`);
-      if (unmatched > 0) {
-        log.warn(
-          `${unmatched} enrichment records could not be matched to picks (NotebookLM drifted > 30s from anchor). These picks will render with default coldOpen/naturalEnd/thumbnail.`,
-        );
-      }
+      log.info(`Timestamp enrichment: ${matched} matched`);
     } catch (e) {
-      log.warn(`Enrichment query failed: ${(e as Error).message}. Proceeding with picks as-is.`);
+      log.warn(`Timestamp enrichment failed: ${(e as Error).message}. Proceeding without timestamps.`);
+    }
+
+    // Pass 2: Get rubric scores + title drafts (only for matched candidates)
+    const enrichedCandidates = deduped
+      .map((p, i) => {
+        const data = enrichedData.get(i);
+        if (!data) return null;
+        return {
+          id: i + 1,
+          timestamp: formatTimestamp(p.startSec),
+          hook: p.hook.slice(0, 80),
+          coldOpen: data.coldOpenSec ? formatTimestamp(data.coldOpenSec) : formatTimestamp(p.startSec),
+          flash: data.flashSec ? formatTimestamp(data.flashSec) : "none",
+          naturalEnd: data.naturalEndSec ? formatTimestamp(data.naturalEndSec) : formatTimestamp(p.endSec),
+          thumbnail: data.thumbnailSec ? formatTimestamp(data.thumbnailSec) : formatTimestamp(p.startSec + (p.endSec - p.startSec) / 2),
+        };
+      })
+      .filter(Boolean) as Array<{ id: number; timestamp: string; hook: string; coldOpen: string; flash: string; naturalEnd: string; thumbnail: string }>;
+
+    if (enrichedCandidates.length > 0) {
+      const rubricPrompt = QUERY_ENRICHMENT_RUBRIC(enrichedCandidates);
+      await sleep(15000); // 15s before enrichment to avoid rate limits
+    log.info(`Running enrichment pass 2 (rubric) for ${enrichedCandidates.length} candidates`);
+      try {
+        const rubricResponse = await queryWithRetry(notebookId, rubricPrompt, { conversationId });
+        const rubricRecords = parseEnrichmentQuery(rubricResponse);
+        let withRubric = 0;
+        for (const rec of rubricRecords) {
+          const pick = deduped.find((p) => Math.abs(p.startSec - rec.anchorStartSec) <= 30);
+          if (!pick) continue;
+          const idx = deduped.indexOf(pick);
+          const existing = enrichedData.get(idx) ?? {};
+          enrichedData.set(idx, {
+            ...existing,
+            titleDrafts: rec.titleDrafts,
+            rubric: rec.rubric,
+          });
+          if (rec.rubric) withRubric++;
+        }
+        log.info(`Rubric enrichment: ${withRubric} scored`);
+      } catch (e) {
+        log.warn(`Rubric enrichment failed: ${(e as Error).message}. Proceeding without rubric.`);
+      }
+    }
+
+    // Back-fill enrichment onto deduped picks
+    let enrichedCount = 0;
+    for (const [idx, data] of enrichedData) {
+      const pick = deduped[idx];
+      if (!pick) continue;
+      enrichedCount++;
+      if (data.coldOpenSec) (pick as any).coldOpenSec = data.coldOpenSec;
+      if (data.naturalEndSec) {
+        (pick as any).naturalEndSec = data.naturalEndSec;
+        pick.endSec = data.naturalEndSec;
+      }
+      if (data.thumbnailSec) (pick as any).thumbnailSec = data.thumbnailSec;
+      if (data.flashSec) (pick as any).flashSec = data.flashSec;
+      if (data.titleDrafts?.length) (pick as any).titleDrafts = data.titleDrafts;
+      if (data.rubric) (pick as any).rubric = data.rubric;
+    }
+    log.info(`Total enriched: ${enrichedCount}/${deduped.length} picks`);
+  }
+
+  // Load heatmap if available for crowd-sourced scoring boost
+  let heatmap: HeatPoint[] | null = null;
+  if (manifest.heatmapPath && existsSync(manifest.heatmapPath)) {
+    const heatResult = loadHeatmap(manifest.streamId, join(manifest.jobDir, "source"));
+    if (heatResult) {
+      heatmap = heatResult.points;
+      log.info(`Loaded heatmap: ${heatmap.length} points`);
     }
   }
 
@@ -282,13 +348,29 @@ async function main(): Promise<void> {
   const scores = new Map<string, number>();
   for (let i = 0; i < deduped.length; i++) {
     const p = deduped[i];
+    const durationSec = p.endSec - p.startSec;
+
+    // Compute heatmap bonus based on moment's position in stream
+    let heatmapBonus = 0;
+    if (heatmap && manifest.durationSec > 0) {
+      const startPct = p.startSec / manifest.durationSec;
+      const endPct = p.endSec / manifest.durationSec;
+      heatmapBonus = scoreHeatmapBonus(heatmap, startPct, endPct);
+      if (heatmapBonus > 0) {
+        log.debug(`Pick ${i}: heatmap bonus +${heatmapBonus} (${startPct.toFixed(2)}-${endPct.toFixed(2)})`);
+      }
+    }
+
     const result = scorePick({
       strength: p.strength,
       categories: p.categories,
-      durationSec: p.endSec - p.startSec,
+      durationSec,
       setupNeeded: p.setupNeeded,
       setupOffsetSec: p.setupOffsetSec,
       categoryQueryHitCount: p.categoryQueryHitCount,
+      quote: p.quote,
+      hook: p.hook,
+      heatmapBonus,
     });
     const rubric = (p as any).rubric as
       | { hook: number; flow: number; engagement: number; trend: number; total: number }
@@ -323,9 +405,12 @@ async function main(): Promise<void> {
     hook: p.hook,
     quote: p.quote,
     setupNeeded: p.setupNeeded,
+    archetype: inferArchetype(p.categories),
+    visualType: p.visualType,
     coldOpenSec: (p as any).coldOpenSec,
     naturalEndSec: (p as any).naturalEndSec,
     thumbnailSec: (p as any).thumbnailSec,
+    flashSec: (p as any).flashSec ?? p.flashSec,
     titleDrafts: (p as any).titleDrafts,
     rubric: (p as any).rubric,
     viralSubScores: (p as any).viralSubScores,
@@ -344,6 +429,8 @@ async function main(): Promise<void> {
     streamDate: manifest.uploadDate,
     categories: m.categories,
     viralScore: m.viralScore,
+    startSec: m.startSec,
+    endSec: m.endSec,
     durationSec: m.durationSec,
     hook: m.hook,
     status: "pending" as const,
@@ -369,11 +456,54 @@ async function main(): Promise<void> {
   log.info("✓ NotebookLM review complete");
 }
 
+// Retry wrapper for NotebookLM queries with exponential backoff
+async function queryWithRetry(
+  notebookId: string,
+  prompt: string,
+  opts: { conversationId?: string },
+  maxRetries = 3,
+): Promise<any> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delayMs = Math.min(30000, 5000 * Math.pow(2, attempt)); // 10s, 20s, 30s
+        log.info(`  Retry ${attempt}/${maxRetries} after ${delayMs}ms...`);
+        await sleep(delayMs);
+      }
+      return query(notebookId, prompt, opts);
+    } catch (e) {
+      const msg = (e as Error).message;
+      lastError = e as Error;
+      if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("rate limit") || msg.includes("8:")) {
+        log.warn(`  Rate limited (attempt ${attempt + 1}/${maxRetries + 1}): ${msg.slice(0, 100)}`);
+        continue;
+      }
+      // Non-retryable error — throw immediately
+      throw e;
+    }
+  }
+  throw lastError ?? new Error("Max retries exceeded");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function formatTimestamp(sec: number): string {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = Math.floor(sec % 60);
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function inferArchetype(categories: string[]): string {
+  if (categories.includes("friend-roast") || categories.includes("roast")) return "roast";
+  if (categories.includes("crash-out") || categories.includes("meltdown")) return "crashout";
+  if (categories.includes("skill") || categories.includes("clutch") || categories.includes("gameplay")) return "skill";
+  if (categories.includes("one-liner") || categories.includes("quotable")) return "one-liner";
+  if (categories.includes("story-of-stream") || categories.includes("callback") || categories.includes("running-bit")) return "story-payoff";
+  return "general";
 }
 
 function buildReviewMarkdown(manifest: any, moments: any[]): string {
@@ -393,7 +523,10 @@ function buildReviewMarkdown(manifest: any, moments: any[]): string {
       `### ${i + 1}. [${formatTimestamp(m.startSec)}] ${m.hook} (score: ${m.viralScore})`,
     );
     lines.push(`- **Categories:** ${m.categories.join(", ")}`);
+    lines.push(`- **Archetype:** ${m.archetype}`);
+    if (m.visualType) lines.push(`- **Visual Type:** ${m.visualType}`);
     lines.push(`- **Duration:** ${m.durationSec}s`);
+    if (m.flashSec) lines.push(`- **Flash:** ${formatTimestamp(m.flashSec)}`);
     if (m.quote) lines.push(`- **Quote:** "${m.quote}"`);
     if (m.titleDrafts?.length) {
       lines.push(`- **Title drafts:**`);

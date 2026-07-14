@@ -4,6 +4,7 @@ import { GamingShort } from "./compositions/GamingShort/index";
 import { gamingShortSchema } from "./compositions/GamingShort/schema";
 import { Thumbnail } from "./compositions/Thumbnail/index";
 import { thumbnailSchema } from "./compositions/Thumbnail/schema";
+import { WorkflowSmoke } from "./compositions/WorkflowSmoke/index";
 
 export const RemotionRoot: React.FC = () => {
   return (
@@ -36,6 +37,19 @@ export const RemotionRoot: React.FC = () => {
           title: "Daily Peanut Clips",
           accentColor: "#d4a017",
           variant: "bold" as const,
+        }}
+      />
+      <Composition
+        id="WorkflowSmoke"
+        component={WorkflowSmoke}
+        durationInFrames={30}
+        fps={30}
+        width={360}
+        height={640}
+        defaultProps={{
+          videoSrc: "smoke-video.mp4",
+          audioSrc: "smoke-audio.m4a",
+          label: "Remotion workflow smoke",
         }}
       />
     </>

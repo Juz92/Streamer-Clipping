@@ -30,10 +30,10 @@ function extractMultiSegmentClip(
   tempDir: string,
 ): void {
   if (segments.length === 1) {
-    // Single segment — stream copy is fine
+    // Single segment — re-encode and explicitly map audio so extracted clips are never silent.
     execSync(
-      `ffmpeg -ss ${segments[0].startSec} -i "${sourcePath}" -t ${segments[0].durationSec} -c copy "${outputPath}" -y`,
-      { stdio: "pipe" },
+      `ffmpeg -ss ${segments[0].startSec} -i "${sourcePath}" -t ${segments[0].durationSec} -map 0:v:0 -map 0:a? ${ENCODE_OPTS} -movflags +faststart "${outputPath}" -y`,
+      { stdio: "pipe", timeout: 120000 },
     );
     return;
   }

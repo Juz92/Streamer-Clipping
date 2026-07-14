@@ -18,12 +18,16 @@ const NLM_ENV: NotebookLMEnv = {
 
 function run(
   args: string[],
-  opts: { timeoutMs?: number; maxBufferMb?: number } = {},
+  opts: { timeoutMs?: number; maxBufferMb?: number; skipReauth?: boolean } = {},
 ): string {
   const timeoutMs = opts.timeoutMs ?? 120_000;
   const maxBuffer = (opts.maxBufferMb ?? 32) * 1024 * 1024;
 
-  const result = spawnSync("nlm", args, {
+  // Use the 'fresh' profile which has working auth (default profile cookies expire)
+  // --profile must come AFTER the subcommand, not before
+  const argsWithProfile = [...args, "--profile", "fresh"];
+
+  const result = spawnSync("nlm", argsWithProfile, {
     env: NLM_ENV.env,
     encoding: "utf-8",
     timeout: timeoutMs,
@@ -51,6 +55,22 @@ function run(
   }
 
   return result.stdout ?? "";
+}
+
+/** Re-authenticate before a batch of queries to prevent expiration during long uploads. */
+export function reauth(): void {
+  log.info("Refreshing NotebookLM auth...");
+  const result = spawnSync("nlm", ["login", "--profile", "fresh"], {
+    env: NLM_ENV.env,
+    encoding: "utf-8",
+    timeout: 60_000,
+    shell: true,
+  });
+  if (result.status === 0) {
+    log.info("Auth refreshed successfully");
+  } else {
+    log.warn(`Auth refresh failed: ${(result.stderr ?? "").slice(0, 200)}`);
+  }
 }
 
 function runJson<T = unknown>(
@@ -195,7 +215,7 @@ export function deleteNotebook(notebookId: string): void {
 /** Check whether the nlm CLI is available on PATH. */
 export function isNlmAvailable(): boolean {
   try {
-    const result = spawnSync("nlm", ["--version"], {
+    const result = spawnSync("nlm", ["notebook", "list", "--profile", "fresh", "--quiet"], {
       env: NLM_ENV.env,
       encoding: "utf-8",
       timeout: 10_000,

@@ -17,6 +17,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "studio": "remotion studio"
+    "studio": "remotion studio",
+    "doctor": "node scripts/remotion-doctor.mjs",
+    "smoke": "node scripts/remotion-smoke.mjs",
+    "preflight": "node scripts/media-preflight.mjs",
+    "contact-sheet": "node scripts/contact-sheet.mjs",
+    "qa": "node scripts/render-qa.mjs"
   }
 }

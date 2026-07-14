@@ -14,6 +14,10 @@ export interface CandidatePointer {
   streamDate: string;
   categories: string[];
   viralScore: number;
+  /** Absolute stream timestamp for the candidate. Needed for safe replacement extraction. */
+  startSec?: number;
+  /** Absolute stream end timestamp for the candidate. */
+  endSec?: number;
   durationSec: number;
   hook: string;
   status:
@@ -24,8 +28,23 @@ export interface CandidatePointer {
     | "rejected";
   statusUpdatedAt: string;
   postedDate?: string;
+  youtubeVideoId?: string;
   youtubeUrl?: string;
+  youtubePerformance?: YoutubePerformance;
   weeklyCompilationId?: string;
+}
+
+export interface YoutubePerformance {
+  observedAt: string;
+  ageHours: number;
+  mature72h: boolean;
+  views: number;
+  averageViewPercentage: number;
+  shares: number;
+  likes?: number;
+  comments?: number;
+  averageViewDuration?: number;
+  ctr?: number;
 }
 
 export interface CandidatePool {
@@ -88,6 +107,101 @@ export function appendCandidates(
   const pool = loadPool(path);
   pool.candidates.push(...candidates);
   savePool(path, pool);
+}
+
+export interface YoutubeCandidateLink {
+  jobId: string;
+  momentId: string;
+  videoId: string;
+  linkedAt: string;
+}
+
+/**
+ * Attach a YouTube video ID to one exact source candidate.
+ * Moment IDs repeat between jobs, so matching by moment ID alone is unsafe.
+ */
+export function linkYoutubeUpload(
+  path: string,
+  link: YoutubeCandidateLink,
+): CandidatePointer {
+  if (!link.jobId || !link.momentId) {
+    throw new Error("YouTube alignment requires both jobId and momentId");
+  }
+  if (!/^[A-Za-z0-9_-]{6,}$/.test(link.videoId)) {
+    throw new Error(`Invalid YouTube video ID: ${link.videoId}`);
+  }
+
+  const pool = loadPool(path);
+  const matches = pool.candidates.filter(
+    (candidate) => candidate.jobId === link.jobId && candidate.momentId === link.momentId,
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `Expected exactly one candidate for ${link.jobId}:${link.momentId}; found ${matches.length}`,
+    );
+  }
+
+  const candidate = matches[0];
+  candidate.youtubeVideoId = link.videoId;
+  candidate.youtubeUrl = `https://youtube.com/shorts/${link.videoId}`;
+  candidate.statusUpdatedAt = link.linkedAt;
+  savePool(path, pool);
+  return candidate;
+}
+
+/** Mark an already-linked YouTube upload as a published daily clip. */
+export function recordYoutubePublication(
+  path: string,
+  publication: Omit<YoutubeCandidateLink, "linkedAt"> & { postedAt: string },
+): CandidatePointer {
+  linkYoutubeUpload(path, {
+    jobId: publication.jobId,
+    momentId: publication.momentId,
+    videoId: publication.videoId,
+    linkedAt: publication.postedAt,
+  });
+
+  const pool = loadPool(path);
+  const candidate = pool.candidates.find(
+    (item) => item.jobId === publication.jobId && item.momentId === publication.momentId,
+  )!;
+  candidate.status = "posted-daily";
+  candidate.postedDate = publication.postedAt.slice(0, 10);
+  candidate.statusUpdatedAt = publication.postedAt;
+  savePool(path, pool);
+  return candidate;
+}
+
+/** Join an owned YouTube performance snapshot back to its exact source window. */
+export function recordYoutubePerformance(
+  path: string,
+  snapshot: Omit<YoutubePerformance, "ageHours" | "mature72h"> & { videoId: string },
+): CandidatePointer {
+  const pool = loadPool(path);
+  const matches = pool.candidates.filter((candidate) => candidate.youtubeVideoId === snapshot.videoId);
+  if (matches.length !== 1) {
+    throw new Error(`Expected exactly one candidate for YouTube ${snapshot.videoId}; found ${matches.length}`);
+  }
+
+  const candidate = matches[0];
+  const ageHours = Math.max(
+    0,
+    (Date.parse(snapshot.observedAt) - Date.parse(candidate.statusUpdatedAt)) / 3_600_000,
+  );
+  candidate.youtubePerformance = {
+    observedAt: snapshot.observedAt,
+    ageHours,
+    mature72h: ageHours >= 72,
+    views: snapshot.views,
+    averageViewPercentage: snapshot.averageViewPercentage,
+    shares: snapshot.shares,
+    likes: snapshot.likes,
+    comments: snapshot.comments,
+    averageViewDuration: snapshot.averageViewDuration,
+    ctr: snapshot.ctr,
+  };
+  savePool(path, pool);
+  return candidate;
 }
 
 /**

@@ -57,6 +57,13 @@ Review these aspects and respond ONLY with this JSON (no markdown fences, no ext
     "readable": <true/false>,
     "matches_content": <true/false>
   }},
+  "editorial_gates": {{
+    "first_three_seconds_strong": <true/false>,
+    "self_contained": <true/false>,
+    "payoff_arrives_fast": <true/false>,
+    "has_filler_or_dead_middle": <true/false>,
+    "ending_loops_cleanly": <true/false>
+  }},
   "content_quality": {{
     "score": <1-10>,
     "pacing": "<too fast / good / too slow / needs trimming>",
@@ -77,8 +84,10 @@ Review these aspects and respond ONLY with this JSON (no markdown fences, no ext
 RULES:
 - The #1 issue on gaming clips is mid-sentence cuts. If the last word is incomplete or the clip trails off, mark NEEDS_TRIM and set trim_end_seconds to a negative number (extend by that many seconds).
 - If the ending is fine but the clip is too long with dead air, use a positive trim_end_seconds.
-- If content isn't funny enough, mark SKIP. If the whole clip is broken, NEEDS_RECUT.
-- PASS = ready to upload with no changes."""
+- If the first 3 seconds are weak, confusing, or not scroll-stopping, do NOT pass the clip.
+- If the clip needs outside stream context to make sense, do NOT pass the clip.
+- If content has a mild/filler middle or the payoff arrives too late, prefer SKIP or NEEDS_RECUT.
+- PASS = ready to upload with no changes and strong enough to compete for Shorts distribution."""
 
 
 def wait_for_file(client, file):

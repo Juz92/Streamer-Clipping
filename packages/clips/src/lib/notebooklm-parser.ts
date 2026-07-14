@@ -43,6 +43,10 @@ export interface NotebookLMPick {
   sourceQuery: SourceQuery;
   /** Additional timestamps for running bits / multi-appearance picks. */
   additionalTimestamps?: number[];
+  /** Visual type detected by NotebookLM (gameplay | talking). */
+  visualType?: string;
+  /** Best flash moment within the first few seconds (for cold open). */
+  flashSec?: number;
 }
 
 export interface RawQueryResponse {
@@ -62,6 +66,62 @@ export function parseTimestampToSec(ts: string): number {
   const m = ts.match(TIMESTAMP_RE);
   if (!m) return -1;
   return parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10);
+}
+
+const RECALL_LANES: Record<string, { categories: string[]; sourceQuery: SourceQuery }> = {
+  "peanut bits": { categories: ["peanut-bits", "character-moment"], sourceQuery: "humor" },
+  "squad chaos": { categories: ["squad-chaos", "friend-roast"], sourceQuery: "friend-roasts" },
+  "wtf game moments": { categories: ["wtf-game-moment", "reaction-gold"], sourceQuery: "emotional-peaks" },
+  "peanut plays": { categories: ["peanut-plays", "skill"], sourceQuery: "emotional-peaks" },
+  "the mission": { categories: ["the-mission", "story-of-stream"], sourceQuery: "story-of-stream" },
+};
+
+function recallCandidateLines(answer: string): string[] {
+  try {
+    const parsed = JSON.parse(answer) as { windows?: Array<{ candidate?: Record<string, unknown> | null }> };
+    if (Array.isArray(parsed.windows)) {
+      const field = (value: unknown): string => String(value ?? "").replace(/\|/g, "/");
+      return parsed.windows.flatMap(({ candidate }) =>
+        candidate
+          ? [`CANDIDATE|${field(candidate.start)}|${field(candidate.end)}|${field(candidate.lane)}|${field(candidate.strength)}|${field(candidate.title)}|${field(candidate.reason)}|${field(candidate.quote)}`]
+          : [],
+      );
+    }
+  } catch {
+    // Pipe-delimited fallback for providers without JSON mode.
+  }
+  return answer.split("\n");
+}
+
+/** Parse the compact, bounded transcript-recall contract. */
+export function parseRecallCandidates(raw: RawQueryResponse): NotebookLMPick[] {
+  const picks: NotebookLMPick[] = [];
+  for (const line of recallCandidateLines(raw.value.answer)) {
+    const marker = line.indexOf("CANDIDATE|");
+    if (marker < 0) continue;
+    const [, startRaw, endRaw, laneRaw, strengthRaw, titleRaw, reasonRaw, quoteRaw] = line.slice(marker).trim().split("|");
+    const startSec = parseTimestampToSec(startRaw?.includes("[") ? startRaw : `[${startRaw}]`);
+    const endSec = parseTimestampToSec(endRaw?.includes("[") ? endRaw : `[${endRaw}]`);
+    const lane = RECALL_LANES[(laneRaw ?? "").trim().toLowerCase()];
+    const strength = Number.parseInt(strengthRaw ?? "", 10);
+    const title = (titleRaw ?? "").trim();
+    const reason = (reasonRaw ?? "").trim();
+    const durationSec = endSec - startSec;
+    if (startSec < 0 || durationSec < 20 || durationSec > 140 || !lane || !title) continue;
+
+    picks.push({
+      startSec,
+      endSec,
+      hook: reason ? `${title}: ${reason}` : title,
+      quote: quoteRaw?.trim() || undefined,
+      categories: lane.categories,
+      setupNeeded: false,
+      setupOffsetSec: 0,
+      strength: Number.isFinite(strength) ? Math.max(1, Math.min(5, strength)) : 3,
+      sourceQuery: lane.sourceQuery,
+    });
+  }
+  return picks;
 }
 
 /**
@@ -452,6 +512,7 @@ export interface EnrichmentRecord {
   coldOpenSec?: number;
   naturalEndSec?: number;
   thumbnailSec?: number;
+  flashSec?: number;
   titleDrafts: string[];
   rubric?: ViralRubric;
 }
@@ -462,79 +523,133 @@ export function parseEnrichmentQuery(
   const answer = raw.value.answer;
   const records: EnrichmentRecord[] = [];
 
-  // Each candidate: **N. [HH:MM:SS]** or N. [HH:MM:SS]
-  const blocks = answer.split(/\n(?=(?:\*\*)?\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/);
+  // NotebookLM returns enrichment in two formats:
+  // Batch (multiple): **Candidate 1. [01:25:18] - label**
+  //   *   **Cold open:** [01:25:18]
+  //   *   **Flash:** [01:25:35]
+  // Single (no header): - **Cold open:** [01:25:18] [1]
+  // Try batch first, fallback to single.
 
-  for (const block of blocks) {
+  const batchBlocks = answer.split(
+    /\n(?=\*\*Candidate\s+\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/,
+  );
+
+  for (const block of batchBlocks) {
     const anchorMatch = block.match(
-      /(?:\*\*)?\d+\.\s+\[(\d{2}):(\d{2}):(\d{2})\]/,
+      /\*\*Candidate\s+(\d+)\.\s+\[(\d{2}):(\d{2}):(\d{2})\]/,
     );
-    if (!anchorMatch) continue;
+    if (!anchorMatch) {
+      const altMatch = block.match(/\*\*(\d+)\.\s+\[(\d{2}):(\d{2}):(\d{2})\]/);
+      if (!altMatch) continue;
+      const anchorStartSec =
+        parseInt(altMatch[2], 10) * 3600 +
+        parseInt(altMatch[3], 10) * 60 +
+        parseInt(altMatch[4], 10);
+      records.push(parseEnrichmentBlock(block, anchorStartSec));
+      continue;
+    }
     const anchorStartSec =
-      parseInt(anchorMatch[1], 10) * 3600 +
-      parseInt(anchorMatch[2], 10) * 60 +
-      parseInt(anchorMatch[3], 10);
+      parseInt(anchorMatch[2], 10) * 3600 +
+      parseInt(anchorMatch[3], 10) * 60 +
+      parseInt(anchorMatch[4], 10);
+    records.push(parseEnrichmentBlock(block, anchorStartSec));
+  }
 
-    const extractTs = (label: string): number | undefined => {
-      const re = new RegExp(`${label}:?\\s*\\[(\\d{2}):(\\d{2}):(\\d{2})\\]`, "i");
-      const m = block.match(re);
-      if (!m) return undefined;
-      return (
-        parseInt(m[1], 10) * 3600 +
-        parseInt(m[2], 10) * 60 +
-        parseInt(m[3], 10)
-      );
-    };
-
-    const titleDrafts: string[] = [];
-    const titleSectionMatch = block.match(
-      /Title (?:drafts|variants|options):?\s*\n((?:\s*\d+\.\s+[^\n]+\n?)+)/i,
-    );
-    if (titleSectionMatch) {
-      const lines = titleSectionMatch[1].split("\n");
-      for (const line of lines) {
-        const titleMatch = line.match(/\d+\.\s+(.+)/);
-        if (titleMatch) titleDrafts.push(titleMatch[1].trim());
-      }
+  // Single-candidate fallback
+  if (records.length === 0) {
+    const singleAnchor = answer.match(/\[(\d{2}):(\d{2}):(\d{2})\]/);
+    if (singleAnchor && (answer.includes("Cold open") || answer.includes("Flash"))) {
+      const anchorStartSec =
+        parseInt(singleAnchor[1], 10) * 3600 +
+        parseInt(singleAnchor[2], 10) * 60 +
+        parseInt(singleAnchor[3], 10);
+      records.push(parseEnrichmentBlock(answer, anchorStartSec));
     }
-
-    // Rubric — tolerate "Hook: 18/25" or "Hook: 18" or "- Hook: 18/25"
-    const extractScore = (label: string): number | undefined => {
-      const re = new RegExp(`${label}:\\s*(\\d+)(?:\\s*/\\s*25)?`, "i");
-      const m = block.match(re);
-      if (!m) return undefined;
-      const n = parseInt(m[1], 10);
-      if (Number.isNaN(n)) return undefined;
-      return Math.max(0, Math.min(25, n));
-    };
-
-    const hook = extractScore("Hook");
-    const flow = extractScore("Flow");
-    const engagement = extractScore("Engagement");
-    const trend = extractScore("Trend");
-
-    let rubric: ViralRubric | undefined;
-    if (hook != null && flow != null && engagement != null && trend != null) {
-      rubric = {
-        hook,
-        flow,
-        engagement,
-        trend,
-        total: hook + flow + engagement + trend,
-      };
-    }
-
-    records.push({
-      anchorStartSec,
-      coldOpenSec: extractTs("Cold open"),
-      naturalEndSec: extractTs("Natural end"),
-      thumbnailSec: extractTs("Thumbnail"),
-      titleDrafts: titleDrafts.slice(0, 3),
-      rubric,
-    });
   }
 
   return records;
+}
+
+function parseEnrichmentBlock(
+  block: string,
+  anchorStartSec: number,
+): EnrichmentRecord {
+  const extractTs = (label: string): number | undefined => {
+    // Match: *   **Label:** [HH:MM:SS]  or  - **Label:** [HH:MM:SS]
+    const boldRe = new RegExp(
+      "(?:\\*|\\-)\\s+\\*\\*\\s*" + label + "\\s*:\\*\\*\\s*\\[(\\d{2}):(\\d{2}):(\\d{2})\\]",
+      "i",
+    );
+    const boldMatch = block.match(boldRe);
+    if (boldMatch) {
+      return (
+        parseInt(boldMatch[1], 10) * 3600 +
+        parseInt(boldMatch[2], 10) * 60 +
+        parseInt(boldMatch[3], 10)
+      );
+    }
+    // Fallback: Label: [HH:MM:SS] (no ** wrapper)
+    const plainRe = new RegExp(
+      "-?\\s*" + label + ":?\\s*\\[(\\d{2}):(\\d{2}):(\\d{2})\\]",
+      "i",
+    );
+    const plainMatch = block.match(plainRe);
+    if (plainMatch) {
+      return (
+        parseInt(plainMatch[1], 10) * 3600 +
+        parseInt(plainMatch[2], 10) * 60 +
+        parseInt(plainMatch[3], 10)
+      );
+    }
+    return undefined;
+  };
+
+  const titleDrafts: string[] = [];
+  const titleSectionMatch = block.match(
+    /Title\s+(?:drafts|variants|options):?\s*\n((?:\s*\d+\.\s+[^\n]+\n?)+)/i,
+  );
+  if (titleSectionMatch) {
+    const lines = titleSectionMatch[1].split("\n");
+    for (const line of lines) {
+      const titleMatch = line.match(/\d+\.\s+(.+)/);
+      if (titleMatch) titleDrafts.push(titleMatch[1].trim());
+    }
+  }
+
+  // Rubric — tolerate "Hook: 18/25" or "Hook: 18" or "- Hook: 18/25"
+  const extractScore = (label: string): number | undefined => {
+    const re = new RegExp(label + ":\\s*(\\d+)(?:\\s*/\\s*25)?", "i");
+    const m = block.match(re);
+    if (!m) return undefined;
+    const n = parseInt(m[1], 10);
+    if (Number.isNaN(n)) return undefined;
+    return Math.max(0, Math.min(25, n));
+  };
+
+  const hook = extractScore("Hook");
+  const flow = extractScore("Flow");
+  const engagement = extractScore("Engagement");
+  const trend = extractScore("Trend");
+
+  let rubric: ViralRubric | undefined;
+  if (hook != null && flow != null && engagement != null && trend != null) {
+    rubric = {
+      hook,
+      flow,
+      engagement,
+      trend,
+      total: hook + flow + engagement + trend,
+    };
+  }
+
+  return {
+    anchorStartSec,
+    coldOpenSec: extractTs("Cold open"),
+    naturalEndSec: extractTs("Natural end"),
+    thumbnailSec: extractTs("Thumbnail"),
+    titleDrafts: titleDrafts.slice(0, 3),
+    rubric,
+  };
 }
 
 /**

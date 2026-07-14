@@ -9,3 +9,11 @@ yt-dlp.conf
 *.db-wal
 *.db-shm
 .remotion/
+
+# Local/generated artifacts
+.scratch/
+__pycache__/
+*.py[cod]
+*.pt
+transcripts/
+packages/remotion/.tmp/

@@ -32,14 +32,18 @@ import { createLogger, ensureDir } from "@ltx/shared";
 import { findStreamDir, loadManifest, saveManifest } from "./lib/manifest.js";
 import { parseAudioLevels, type AudioSample } from "./lib/audio-analyzer.js";
 import { transcribeClip, type WhisperWord } from "./lib/whisper-captions.js";
-import { computeAutoTrim } from "./lib/auto-trim.js";
+import { computeAutoTrim } from "./lib/enhanced-auto-trim.js";
 import { finalizeClip, remapWhisperForFinalized } from "./lib/trim-finalize.js";
 import { diarizeClip, isPyannoteAvailable, type SpeakerTurn } from "./lib/diarize.js";
+import { loadFeedback, getDurationSweetSpot } from "./lib/feedback.js";
 
 const log = createLogger("trim");
 
 interface ClipMeta {
   rank: number;
+  momentId?: string;
+  sourceStartSec?: number;
+  sourceEndSec?: number;
   clipFile: string;
   description: string;
   hookText: string;
@@ -48,6 +52,7 @@ interface ClipMeta {
   source: string;
   targetMin: number;
   targetMax: number;
+  archetype?: string;
   titleDrafts?: string[];
   initialFlashStart?: number;
   initialFlashEnd?: number;
@@ -129,6 +134,7 @@ async function main() {
       description?: string;
       viralScore?: number;
       categories?: string[];
+      archetype?: string;
       titleDrafts?: string[];
       coldOpenSec?: number;
       naturalEndSec?: number;
@@ -183,16 +189,23 @@ async function main() {
       const flashStart = Math.max(0, flashAnchor - 1);
       const flashEnd = flashAnchor + 1;
 
+      const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
+      const targets = getTrimTargets(archetype);
+
       clips.push({
         rank,
+        momentId: m.id,
+        sourceStartSec: m.startSec,
+        sourceEndSec: m.endSec,
         clipFile: fileName,
         description: m.description || m.hook || `Clip ${rank}`,
         hookText: m.hook || "",
         viralityScore: m.viralScore || 0,
         layoutMode: "gameplay",
         source: "notebooklm",
-        targetMin: 20,
-        targetMax: 35,
+        archetype,
+        targetMin: targets.targetMin,
+        targetMax: targets.targetMax,
         titleDrafts: m.titleDrafts,
         initialFlashStart: flashStart,
         initialFlashEnd: flashEnd,
@@ -244,6 +257,7 @@ async function main() {
         viralityScore: moment?.viralityScore || 0,
         layoutMode: moment?.layoutMode || "gameplay",
         source: moment?.source || "manual",
+        archetype: "general",
         targetMin: 20,
         targetMax: 25,
       };
@@ -269,6 +283,9 @@ async function main() {
     channelConfig,
     clips: clips.map((c) => ({
       rank: c.rank,
+      momentId: c.momentId,
+      sourceStartSec: c.sourceStartSec,
+      sourceEndSec: c.sourceEndSec,
       clipFile: c.clipFile,
       description: c.description,
       hookText: c.hookText,
@@ -395,6 +412,9 @@ async function main() {
                 totalClips: trimData.length,
                 approved: approved.map((t) => ({
                   rank: t.rank,
+                  momentId: clips.find((clip) => clip.rank === t.rank)?.momentId,
+                  sourceStartSec: clips.find((clip) => clip.rank === t.rank)?.sourceStartSec,
+                  sourceEndSec: clips.find((clip) => clip.rank === t.rank)?.sourceEndSec,
                   clipFile: t.clipFile,
                   flashStart: t.flashStart,
                   flashDuration: t.flashDuration,
@@ -544,6 +564,7 @@ async function main() {
 
 interface AutoMoment {
   rank: number;
+  momentId?: string;
   slug: string;
   paddedFile: string;
   streamStartSec: number;
@@ -551,11 +572,72 @@ interface AutoMoment {
   hookText: string;
   description: string;
   viralityScore: number;
+  archetype: string;
   targetMin: number;
   targetMax: number;
+  flashSec?: number;
+  setupStartSec?: number;
+  payoffStartSec?: number;
+  naturalEndSec?: number;
+  contextNeeded?: boolean;
+  arcCompleteness?: number;
+  qualityStatus?: "suggested" | "candidate" | "reserve";
+  reasonSuggested?: string;
+  visualType?: string;
+}
+
+interface PickQualityEntry {
+  rank: number;
+  status?: "suggested" | "candidate" | "reserve";
+  setupStartSec?: number;
+  payoffStartSec?: number;
+  flashSec?: number;
+  naturalEndSec?: number;
+  contextNeeded?: boolean;
+  arcCompleteness?: number;
+  reasonSuggested?: string;
 }
 
 const PAD_SEC = 10;
+
+function inferArchetypeFromCategories(categories: string[]): string {
+  if (categories.includes("friend-roast") || categories.includes("roast")) return "roast";
+  if (categories.includes("crash-out") || categories.includes("meltdown")) return "crashout";
+  if (categories.includes("skill") || categories.includes("clutch") || categories.includes("gameplay")) return "skill";
+  if (categories.includes("one-liner") || categories.includes("quotable")) return "one-liner";
+  if (categories.includes("story-of-stream") || categories.includes("callback") || categories.includes("running-bit")) return "story-payoff";
+  return "general";
+}
+
+function getTrimTargets(archetype: string): { targetMin: number; targetMax: number } {
+  const fb = loadFeedback();
+  const sweetSpot = getDurationSweetSpot(fb);
+  const base = (() => {
+    switch (archetype) {
+      case "skill":
+        return { targetMin: 15, targetMax: 25 };
+      case "roast":
+        return { targetMin: 22, targetMax: 32 };
+      case "crashout":
+        return { targetMin: 20, targetMax: 30 };
+      case "one-liner":
+        return { targetMin: 15, targetMax: 24 };
+      case "story-payoff":
+        return { targetMin: 25, targetMax: 35 };
+      default:
+        return { targetMin: 18, targetMax: 30 };
+    }
+  })();
+
+  // Tighten targets toward the feedback sweet spot when available.
+  if (sweetSpot.min < base.targetMin && sweetSpot.max > base.targetMin) {
+    base.targetMin = Math.max(sweetSpot.min, base.targetMin - 3);
+  }
+  if (sweetSpot.max > base.targetMax && sweetSpot.min < base.targetMax) {
+    base.targetMax = Math.min(sweetSpot.max, base.targetMax + 3);
+  }
+  return base;
+}
 
 function slugifyForFile(s: string, maxLen = 40): string {
   return s
@@ -577,64 +659,195 @@ function probeDurationSec(path: string): number {
   }
 }
 
+function unlinkIfExists(path: string): void {
+  try {
+    if (existsSync(path)) unlinkSync(path);
+  } catch {
+    // Best-effort cache cleanup. Extraction/transcription will fail loudly if
+    // the stale file actually blocks the next stage.
+  }
+}
+
+function durationsClose(a: number, b: number, toleranceSec = 1.5): boolean {
+  return a > 0 && b > 0 && Math.abs(a - b) <= toleranceSec;
+}
+
+function isFiniteSec(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function loadPickQuality(streamDir: string): Map<number, PickQualityEntry> {
+  const qualityPath = join(streamDir, "pick-quality.json");
+  const byRank = new Map<number, PickQualityEntry>();
+  if (!existsSync(qualityPath)) return byRank;
+
+  try {
+    const report = JSON.parse(readFileSync(qualityPath, "utf-8")) as { picks?: PickQualityEntry[] };
+    for (const pick of report.picks ?? []) {
+      if (Number.isInteger(pick.rank)) byRank.set(pick.rank, pick);
+    }
+  } catch (e) {
+    log.warn(`Could not read pick-quality.json: ${(e as Error).message}`);
+  }
+
+  return byRank;
+}
+
+function applyPickQuality(moment: AutoMoment, quality?: PickQualityEntry): AutoMoment {
+  if (!quality) return moment;
+
+  return {
+    ...moment,
+    streamStartSec: isFiniteSec(quality.setupStartSec) ? quality.setupStartSec : moment.streamStartSec,
+    streamEndSec: isFiniteSec(quality.naturalEndSec) ? quality.naturalEndSec : moment.streamEndSec,
+    flashSec: isFiniteSec(quality.flashSec) ? quality.flashSec : moment.flashSec,
+    setupStartSec: quality.setupStartSec,
+    payoffStartSec: quality.payoffStartSec,
+    naturalEndSec: quality.naturalEndSec,
+    contextNeeded: quality.contextNeeded,
+    arcCompleteness: quality.arcCompleteness,
+    qualityStatus: quality.status,
+    reasonSuggested: quality.reasonSuggested,
+  };
+}
+
 function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): AutoMoment[] {
   const nlmPath = join(streamDir, "notebooklm-moments.json");
   const unifiedPath = join(streamDir, "unified-moments.json");
+  const momentsPath = join(streamDir, "moments.json");
+  const qualityByRank = loadPickQuality(streamDir);
 
   if (existsSync(nlmPath)) {
     const nlm: Array<{
+      id?: string;
       startSec: number;
       endSec: number;
       hook?: string;
       description?: string;
       viralScore?: number;
+      archetype?: string;
+      categories?: string[];
+      flashSec?: number;
+      coldOpenSec?: number;
+      naturalEndSec?: number;
+      visualType?: string;
     }> = JSON.parse(readFileSync(nlmPath, "utf-8"));
-    return nlm.map((m, i) => {
-      const rank = i + 1;
-      const slug = slugifyForFile(m.hook || m.description || `clip-${rank}`);
-      return {
-        rank,
-        slug,
-        paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
-        streamStartSec: m.startSec,
-        streamEndSec: m.endSec,
-        hookText: m.hook || "",
-        description: m.description || m.hook || `Clip ${rank}`,
-        viralityScore: m.viralScore ?? 0,
-        targetMin: 20,
-        targetMax: 35,
-      };
-    });
+    if (nlm.length > 0) {
+      return nlm.map((m, i) => {
+        const rank = i + 1;
+        const slug = slugifyForFile(m.hook || m.description || `clip-${rank}`);
+        const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
+        const targets = getTrimTargets(archetype);
+        return applyPickQuality({
+          rank,
+          slug,
+          paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
+          streamStartSec: m.coldOpenSec ?? m.startSec,
+          streamEndSec: m.naturalEndSec ?? m.endSec,
+          hookText: m.hook || "",
+          description: m.description || m.hook || `Clip ${rank}`,
+          viralityScore: m.viralScore ?? 0,
+          archetype,
+          targetMin: targets.targetMin,
+          targetMax: targets.targetMax,
+          flashSec: m.flashSec,
+          setupStartSec: m.coldOpenSec,
+          naturalEndSec: m.naturalEndSec,
+          visualType: m.visualType,
+        }, qualityByRank.get(rank));
+      });
+    }
   }
 
   if (existsSync(unifiedPath)) {
     const unified: Array<{
+      id?: string;
       startSec: number;
       endSec: number;
       description?: string;
       hookText?: string;
       viralityScore?: number;
+      archetype?: string;
+      categories?: string[];
+      flashSec?: number;
+      coldOpenSec?: number;
+      naturalEndSec?: number;
     }> = JSON.parse(readFileSync(unifiedPath, "utf-8"));
-    return unified.map((m, i) => {
+    if (unified.length > 0) {
+      return unified.map((m, i) => {
+        const rank = i + 1;
+        const slug = slugifyForFile(m.hookText || m.description || `clip-${rank}`);
+        const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
+        const targets = getTrimTargets(archetype);
+        return applyPickQuality({
+          rank,
+          slug,
+          paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
+          streamStartSec: m.coldOpenSec ?? m.startSec,
+          streamEndSec: m.naturalEndSec ?? m.endSec,
+          hookText: m.hookText || "",
+          description: m.description || `Clip ${rank}`,
+          viralityScore: m.viralityScore ?? 0,
+          archetype,
+          targetMin: targets.targetMin,
+          targetMax: targets.targetMax,
+          flashSec: m.flashSec,
+          setupStartSec: m.coldOpenSec,
+          naturalEndSec: m.naturalEndSec,
+        }, qualityByRank.get(rank));
+      });
+    }
+  }
+
+  if (existsSync(momentsPath)) {
+    const scorer: Array<{
+      id?: string;
+      suggestedStartSec?: number;
+      suggestedEndSec?: number;
+      startSec?: number;
+      endSec?: number;
+      description?: string;
+      hookText?: string;
+      hook?: string;
+      signalOverlap?: number;
+      scores?: { viralityScore?: number; composite?: number };
+      archetype?: string;
+      categories?: string[];
+      flashSec?: number;
+      coldOpenSec?: number;
+      naturalEndSec?: number;
+      visualType?: string;
+    }> = JSON.parse(readFileSync(momentsPath, "utf-8"));
+    return scorer.map((m, i) => {
       const rank = i + 1;
-      const slug = slugifyForFile(m.hookText || m.description || `clip-${rank}`);
-      return {
+      const startSec = m.coldOpenSec ?? m.startSec ?? m.suggestedStartSec ?? 0;
+      const endSec = m.naturalEndSec ?? m.endSec ?? m.suggestedEndSec ?? startSec + 30;
+      const hookText = m.hookText || m.hook || "";
+      const slug = slugifyForFile(hookText || m.description || `clip-${rank}`);
+      const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
+      const targets = getTrimTargets(archetype);
+      return applyPickQuality({
         rank,
         slug,
         paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
-        streamStartSec: m.startSec,
-        streamEndSec: m.endSec,
-        hookText: m.hookText || "",
-        description: m.description || `Clip ${rank}`,
-        viralityScore: m.viralityScore ?? 0,
-        targetMin: 20,
-        targetMax: 35,
-      };
+        streamStartSec: startSec,
+        streamEndSec: endSec,
+        hookText,
+        description: m.description || hookText || `Clip ${rank}`,
+        viralityScore: m.scores?.viralityScore ?? m.scores?.composite ?? m.signalOverlap ?? 0,
+        archetype,
+        targetMin: targets.targetMin,
+        targetMax: targets.targetMax,
+        flashSec: m.flashSec,
+        setupStartSec: m.coldOpenSec,
+        naturalEndSec: m.naturalEndSec,
+        visualType: m.visualType,
+      }, qualityByRank.get(rank));
     });
   }
 
   throw new Error(
-    `No notebooklm-moments.json or unified-moments.json in ${streamDir}`,
+    `No notebooklm-moments.json, unified-moments.json, or moments.json in ${streamDir}`,
   );
 }
 
@@ -678,14 +891,34 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
     log.info("Pyannote/HF_TOKEN unavailable — falling back to silence+punctuation snapping");
   }
 
-  // Step 1: extract padded clips (+PAD_SEC each side) via stream copy if missing.
+  // Step 1: extract padded clips (+PAD_SEC each side). A forced auto-trim must
+  // rebuild these from stream.mp4, because raw-clips/ may already contain
+  // finalized flash+content assemblies from a previous run. Reusing those as
+  // "padded" sources poisons trim boundaries and caption timing.
   const streamPath = manifest.videoPath.replace(/\\/g, "/");
   for (const m of moments) {
     const outPath = join(rawClipsDir, m.paddedFile);
-    if (existsSync(outPath)) continue;
-
+    const paddedWhisperPath = join(paddedWhisperDir, m.paddedFile.replace(/\.mp4$/, ".json"));
+    const finalWhisperPath = join(whisperDir, m.paddedFile.replace(/\.mp4$/, ".json"));
     const paddedStart = Math.max(0, m.streamStartSec - PAD_SEC);
     const paddedDur = m.streamEndSec - m.streamStartSec + PAD_SEC * 2;
+    const existingDuration = existsSync(outPath) ? probeDurationSec(outPath) : 0;
+    const needsExtract = force || !existsSync(outPath) || !durationsClose(existingDuration, paddedDur);
+
+    if (!needsExtract) continue;
+
+    if (existsSync(outPath) && !force) {
+      log.warn(
+        `[${m.rank}] Existing raw clip duration ${existingDuration.toFixed(1)}s does not match padded ` +
+          `${paddedDur.toFixed(1)}s — re-extracting and clearing stale captions`,
+      );
+    } else if (force) {
+      log.info(`[${m.rank}] Force rebuild: re-extracting padded source and clearing cached captions`);
+    }
+
+    unlinkIfExists(paddedWhisperPath);
+    unlinkIfExists(finalWhisperPath);
+
     log.info(`[${m.rank}] Extracting padded clip ${paddedStart.toFixed(1)}s +${paddedDur.toFixed(1)}s`);
     try {
       execSync(
@@ -712,6 +945,9 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
 
   const approved: Array<{
     rank: number;
+    momentId?: string;
+    sourceStartSec: number;
+    sourceEndSec: number;
     clipFile: string;
     flashStart: number;
     flashDuration: number;
@@ -721,6 +957,10 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
     totalDuration: number;
     status: "approved";
     notes: string;
+    qualityStatus?: "suggested" | "candidate" | "reserve";
+    arcCompleteness?: number;
+    contextNeeded?: boolean;
+    reasonSuggested?: string;
   }> = [];
 
   for (const m of moments) {
@@ -781,15 +1021,34 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
       whisperWords: paddedWords,
       audioSamples: clipAudio,
       turns,
+      forcedFlashStartSec: m.flashSec != null ? m.flashSec - paddedStartAbs : undefined,
+      forcedContentStartSec: m.setupStartSec != null ? m.setupStartSec - paddedStartAbs : undefined,
+      forcedContentEndSec: m.naturalEndSec != null ? m.naturalEndSec - paddedStartAbs : undefined,
+      forcedPayoffStartSec: m.payoffStartSec != null ? m.payoffStartSec - paddedStartAbs : undefined,
     });
 
-    // Step 5: keep the result inside the configured target duration. If the snap
-    // pushed content past targetMax + 5s, pull the end back toward the signal.
-    const totalTarget = m.targetMax + 5;
+    // Step 5: keep the result inside the configured target duration.
+    // Preserve the natural end/payoff first; trim excess from setup when the
+    // quality pass expanded the build-up too far for a Short.
+    const totalTarget = m.targetMax + 3;
     if (result.contentDuration + result.flashDuration > totalTarget) {
-      const maxContent = totalTarget - result.flashDuration;
-      result.contentEnd = result.contentStart + maxContent;
-      result.contentDuration = maxContent;
+      const maxContent = Math.max(m.targetMin - result.flashDuration, totalTarget - result.flashDuration);
+      result.contentStart = Math.max(0, Math.min(result.contentEnd - 5, result.contentEnd - maxContent));
+      result.contentDuration = result.contentEnd - result.contentStart;
+      const requestedPayoffStart = m.payoffStartSec != null
+        ? m.payoffStartSec - paddedStartAbs
+        : result.segments.payoff.start;
+      const setupEnd = Math.max(result.contentStart, Math.min(result.contentEnd, requestedPayoffStart));
+      result.segments.setup = {
+        start: result.contentStart,
+        end: setupEnd,
+        duration: Math.max(0, setupEnd - result.contentStart),
+      };
+      result.segments.payoff = {
+        start: setupEnd,
+        end: result.contentEnd,
+        duration: Math.max(0, result.contentEnd - setupEnd),
+      };
     }
 
     log.info(
@@ -803,7 +1062,8 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
     // extend. Skip copy if a backup already exists — finalize is idempotent
     // on source, not destructive on backup.
     const backupPath = join(rawClipsBackupDir, m.paddedFile);
-    if (!existsSync(backupPath)) {
+    const backupDuration = existsSync(backupPath) ? probeDurationSec(backupPath) : 0;
+    if (force || !existsSync(backupPath) || !durationsClose(backupDuration, paddedDurationSec)) {
       try {
         execSync(
           `ffmpeg -i "${padded.replace(/\\/g, "/")}" -c copy "${backupPath.replace(/\\/g, "/")}" -y`,
@@ -844,6 +1104,9 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
 
     approved.push({
       rank: m.rank,
+      momentId: m.momentId,
+      sourceStartSec: m.streamStartSec,
+      sourceEndSec: m.streamEndSec,
       clipFile: m.paddedFile,
       flashStart: result.flashStart,
       flashDuration: result.flashDuration,
@@ -852,7 +1115,11 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
       contentDuration: result.contentDuration,
       totalDuration: result.flashDuration + result.contentDuration,
       status: "approved",
-      notes: `flash:${result.notes.flashSource};start:${result.notes.startSnap};end:${result.notes.endSnap}`,
+      notes: `archetype:${m.archetype};quality:${m.qualityStatus ?? "unscored"};arc:${m.arcCompleteness ?? "n/a"};context:${m.contextNeeded ?? false};flash:${result.notes.flashSource};start:${result.notes.startSnap};end:${result.notes.endSnap};setup:${result.segments.setup.duration.toFixed(1)};payoff:${result.segments.payoff.duration.toFixed(1)}`,
+      qualityStatus: m.qualityStatus,
+      arcCompleteness: m.arcCompleteness,
+      contextNeeded: m.contextNeeded,
+      reasonSuggested: m.reasonSuggested,
     });
   }
 
@@ -1768,8 +2035,8 @@ async function finalize() {
 
 // ── Layout & Crop Overlay ──
 const channelConfig = DATA.channelConfig || {};
-const defaultAvatar   = channelConfig.avatarRegion   || {x:100, y:720, w:560, h:360};
-const defaultGameplay = channelConfig.gameplayRegion || {x:200, y:0,   w:1520, h:1080};
+const defaultAvatar   = channelConfig.avatarRegion   || {x:0, y:0, w:1620, h:1080};
+const defaultGameplay = channelConfig.gameplayRegion || {x:408, y:0, w:1320, h:1080};
 
 let layoutState = {}; // clipIndex → { mode, avatar:{x,y,w,h}, gameplay:{x,y,w,h}, cropX }
 

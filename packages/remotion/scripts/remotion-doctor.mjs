@@ -1,0 +1,17 @@
+import { execFileSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { join } from "path";
+const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+const REMOTION_ROOT = join(ROOT, "packages", "remotion");
+const problems = []; const warnings = [];
+const readJson = (p) => JSON.parse(readFileSync(p, "utf-8"));
+const commandOk = (cmd, args=["-version"]) => { try { execFileSync(cmd,args,{stdio:["ignore","ignore","ignore"]}); return true; } catch { return false; } };
+const remPkg = readJson(join(REMOTION_ROOT,"package.json"));
+const deps = { ...(remPkg.dependencies||{}), ...(remPkg.devDependencies||{}) };
+for (const dep of ["remotion","@remotion/cli","@remotion/bundler","@remotion/renderer"]) if (!deps[dep]) problems.push(`packages/remotion missing ${dep}`);
+for (const [name, version] of Object.entries(deps)) if ((name === "remotion" || name.startsWith("@remotion/")) && String(version).match(/^[~^]/)) warnings.push(`${name} uses range ${version}; exact pins are safer`);
+for (const cmd of ["ffmpeg","ffprobe"]) if (!commandOk(cmd)) problems.push(`${cmd} is not reachable on PATH`);
+for (const rel of ["packages/remotion/src/index.ts","packages/remotion/src/Root.tsx"]) if (!existsSync(join(ROOT,rel))) problems.push(`missing ${rel}`);
+if (!existsSync(join(ROOT,"node_modules","@remotion","cli","remotion-cli.js"))) warnings.push("local Remotion CLI not found; run npm install/npm ci for this platform");
+const report={ok:problems.length===0,root:ROOT,problems,warnings}; console.log(JSON.stringify(report,null,2)); if (problems.length) process.exit(1);

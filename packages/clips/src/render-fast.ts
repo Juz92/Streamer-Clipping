@@ -1,8 +1,8 @@
 import { execSync } from "child_process";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, renameSync, readdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "fs";
 import { join } from "path";
 import { createLogger, ensureDir } from "@ltx/shared";
-import { getStreamDir, loadManifest } from "./lib/manifest.js";
+import { getStreamDir, loadManifest, saveManifest } from "./lib/manifest.js";
 import {
   parseVtt,
   vttToWordTimestamps,
@@ -10,13 +10,108 @@ import {
 } from "./lib/subtitle-parser.js";
 import { loadWhisperCaptions, type WhisperWord } from "./lib/whisper-captions.js";
 import { detectLayoutMode } from "./lib/layout.js";
-import { loadChannelConfig } from "./lib/config.js";
+import { loadChannelConfig, type Region } from "./lib/config.js";
 import type { Moment } from "./lib/scorer.js";
 import type { LayoutMode } from "./lib/layout.js";
 import { planMotion, buildZoompanFilter, type MotionPlan } from "./lib/motion.js";
 import { insertEmojis, CAPTION_EMOJI_FONT } from "./lib/caption-emoji.js";
 
 const log = createLogger("render-fast");
+
+function markRendered(streamId: string): void {
+  try {
+    const manifest = loadManifest(streamId);
+    manifest.phase = "rendered";
+    saveManifest(manifest);
+  } catch (e) {
+    log.warn(`Could not update manifest phase: ${(e as Error).message}`);
+  }
+}
+
+// Daily Peanut house style:
+// - talking/setup clips should reframe tightly on the Peanut avatar panel;
+// - gameplay clips should be a clean two-panel stack: avatar panel + reframed gameplay.
+// Older jobs sometimes have zeroed avatar coords in channel-config.json, so keep
+// sane source-space defaults here instead of silently falling back to full-frame crops.
+// Final v8 Daily Peanut layout (2026-07 learnings): source is 1920x1080.
+// Top panel uses a wide left/center source crop, then zooms another ~25% and
+// bottom-aligns so the avatar sits on the join line. Bottom gameplay uses a
+// right-biased 1320x1080 crop to avoid duplicating the Peanut/dog facecam.
+const DAILY_PEANUT_AVATAR_REGION: Region = { x: 0, y: 0, w: 1620, h: 1080 };
+const DAILY_PEANUT_GAMEPLAY_REGION: Region = { x: 408, y: 0, w: 1320, h: 1080 };
+const DAILY_PEANUT_V8_GAMEPLAY_BY_RANK: Record<number, Region> = {
+  1: { x: 276, y: 0, w: 1500, h: 1080 },
+  2: { x: 408, y: 0, w: 1320, h: 1080 },
+  3: { x: 408, y: 0, w: 1320, h: 1080 },
+  4: { x: 252, y: 0, w: 1620, h: 1080 },
+  5: { x: 960, y: 0, w: 960, h: 1080 },
+  6: { x: 408, y: 0, w: 1320, h: 1080 },
+};
+
+interface StreamStyleOverride {
+  avatar?: Region;
+  frame0Avatar?: Region;
+  gameplay?: Region;
+  gameplayByRank?: Record<number, Region>;
+}
+
+// Stream-specific house-style overrides, authored in 1920x1080 source space.
+// gp4sqhiaxNo is a 720p Holdfast stream where the Peanut/avatar sits much
+// smaller and lower/right than job-002. Reusing the job-002 wide-left avatar
+// crop makes it look like the old/generic layout, with Peanut tiny in the top
+// panel. These values map to roughly x120 y300 w520 h370 on 1280x720 source.
+const DAILY_PEANUT_STREAM_STYLE_OVERRIDES: Record<string, StreamStyleOverride> = {
+  gp4sqhiaxNo: {
+    // 1280x720 equivalent: x195 y353 w371 h264. This matches the approved v8
+    // zoom/lift while preserving the shared bottom-aligned top-panel crop.
+    avatar: { x: 292, y: 530, w: 556, h: 396 },
+    frame0Avatar: { x: 330, y: 381, w: 390, h: 693 },
+    // ponytail: exact 675x720 effective crops; leftmost edge per clip that
+    // excludes Peanut. Re-probe only when the stream overlay moves.
+    gameplayByRank: {
+      1: { x: 540, y: 0, w: 1012, h: 1080 },
+      2: { x: 540, y: 0, w: 1012, h: 1080 },
+      3: { x: 600, y: 0, w: 1012, h: 1080 },
+      4: { x: 540, y: 0, w: 1012, h: 1080 },
+      5: { x: 540, y: 0, w: 1012, h: 1080 },
+      6: { x: 480, y: 0, w: 1012, h: 1080 },
+      7: { x: 600, y: 0, w: 1012, h: 1080 },
+      8: { x: 600, y: 0, w: 1012, h: 1080 },
+      9: { x: 600, y: 0, w: 1012, h: 1080 },
+      10: { x: 720, y: 0, w: 1012, h: 1080 },
+    },
+  },
+};
+
+const ENABLE_LEGACY_BODY_HOOK_BANNER = process.env.STREAMER_LEGACY_BODY_HOOK_BANNER === "1";
+
+function isUsableRegion(region: Region | undefined | null): region is Region {
+  return !!region && region.w > 0 && region.h > 0;
+}
+
+function normalizeAvatarRegion(region: Region | undefined | null): Region {
+  return isUsableRegion(region) ? region : DAILY_PEANUT_AVATAR_REGION;
+}
+
+function normalizeGameplayRegion(region: Region | undefined | null): Region {
+  return isUsableRegion(region) ? region : DAILY_PEANUT_GAMEPLAY_REGION;
+}
+
+function defaultAvatarRegion(streamId?: string): Region {
+  return DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId ?? ""]?.avatar ?? DAILY_PEANUT_AVATAR_REGION;
+}
+
+function defaultFrame0AvatarRegion(streamId: string | undefined, fallback: Region): Region {
+  return DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId ?? ""]?.frame0Avatar ?? fallback;
+}
+
+function defaultGameplayRegion(streamId: string | undefined, rank: number): Region {
+  const override = DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId ?? ""];
+  return override?.gameplayByRank?.[rank]
+    ?? override?.gameplay
+    ?? DAILY_PEANUT_V8_GAMEPLAY_BY_RANK[rank]
+    ?? DAILY_PEANUT_GAMEPLAY_REGION;
+}
 
 interface RenderFastOptions {
   streamId: string;
@@ -36,8 +131,8 @@ function escapePath(p: string): string {
 }
 
 /**
- * Group caption words into 3-4 word chunks.
- * Skip first 2 seconds (reserved for hook overlay).
+ * Group caption words into deterministic max-3-word chunks.
+ * Shorts readability beats density; v8 QA rejected 4-word caption groups.
  */
 function generateCaptionChunks(
   words: Array<{ word: string; startMs: number; endMs: number }>,
@@ -56,8 +151,7 @@ function generateCaptionChunks(
   let i = 0;
 
   while (i < words.length) {
-    const chunkSize = 3 + Math.floor(Math.random() * 2); // 3-4 words
-    const chunk = words.slice(i, i + chunkSize);
+    const chunk = words.slice(i, i + 3);
 
     chunks.push({
       startMs: chunk[0].startMs,
@@ -69,7 +163,7 @@ function generateCaptionChunks(
       })),
     });
 
-    i += chunkSize;
+    i += chunk.length;
   }
 
   return chunks;
@@ -171,6 +265,23 @@ function writeSrtFile(
  */
 function parseHookTexts(streamDir: string): Map<number, string> {
   const hooks = new Map<number, string>();
+  const jsonPath = join(streamDir, "upload-metadata.json");
+
+  if (existsSync(jsonPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(jsonPath, "utf-8")) as {
+        items?: Array<{ rank?: number; clipNum?: number; ytTitle?: string; title?: string }>;
+      };
+      for (const item of parsed.items ?? []) {
+        const rank = item.rank ?? item.clipNum;
+        const title = (item.ytTitle ?? item.title)?.trim();
+        if (rank && title) hooks.set(rank, title.replace(/[^\x20-\x7E]/g, "").trim());
+      }
+    } catch {
+      // Keep falling back to markdown hooks.
+    }
+  }
+
   const metaPath = join(streamDir, "upload-metadata.md");
   if (!existsSync(metaPath)) return hooks;
 
@@ -199,6 +310,58 @@ function parseHookTexts(streamDir: string): Map<number, string> {
       }
     }
   }
+
+  return hooks;
+}
+
+/**
+ * Parse short, thumbnail-safe frame0 hook copy. Prefer upload-metadata.json
+ * items[].frame0Hook, fall back to **Frame0 Hook:** in upload-metadata.md,
+ * then finally the regular title hook.
+ */
+function parseFrame0Hooks(streamDir: string): Map<number, string> {
+  const hooks = new Map<number, string>();
+  const jsonPath = join(streamDir, "upload-metadata.json");
+
+  if (existsSync(jsonPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(jsonPath, "utf-8")) as {
+        items?: Array<{ rank?: number; clipNum?: number; frame0Hook?: string }>;
+      };
+      for (const item of parsed.items ?? []) {
+        const rank = item.rank ?? item.clipNum;
+        const hook = item.frame0Hook?.trim();
+        if (rank && hook) hooks.set(rank, hook.replace(/[^\x20-\x7E]/g, "").trim());
+      }
+    } catch {
+      // Keep falling back to markdown/title hooks.
+    }
+  }
+
+  const mdPath = join(streamDir, "upload-metadata.md");
+  if (existsSync(mdPath)) {
+    const content = readFileSync(mdPath, "utf-8");
+    const sectionRegex = /^## (\d+)\s*--/gm;
+    let match: RegExpExecArray | null;
+    const sectionStarts: Array<{ rank: number; start: number }> = [];
+    while ((match = sectionRegex.exec(content)) !== null) {
+      sectionStarts.push({ rank: parseInt(match[1], 10), start: match.index });
+    }
+
+    for (let i = 0; i < sectionStarts.length; i++) {
+      const start = sectionStarts[i].start;
+      const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].start : content.length;
+      const section = content.slice(start, end);
+      const hookMatch = section.match(/\*\*Frame0 Hook:\*\*\s*(.+)/i);
+      if (hookMatch && !hooks.has(sectionStarts[i].rank)) {
+        hooks.set(sectionStarts[i].rank, hookMatch[1].trim().replace(/[^\x20-\x7E]/g, "").trim());
+      }
+    }
+  }
+
+  parseHookTexts(streamDir).forEach((title, rank) => {
+    if (!hooks.has(rank)) hooks.set(rank, title);
+  });
 
   return hooks;
 }
@@ -264,6 +427,11 @@ function escapeDrawtext(text: string): string {
  * ALL CAPS words at the end become Line 2 (bigger text).
  */
 function splitHookText(hook: string): [string, string] {
+  if (hook.includes("/")) {
+    const parts = hook.split("/").map((part) => part.trim()).filter(Boolean);
+    if (parts.length >= 2) return [parts[0], parts.slice(1).join(" ")];
+  }
+
   const words = hook.split(/\s+/);
   if (words.length <= 2) return [hook, ""];
 
@@ -284,9 +452,11 @@ function splitHookText(hook: string): [string, string] {
 }
 
 /**
- * Build hook overlay drawtext filters for the flash duration.
- * White banner + yellow neon glow text per CLAUDE.md approved style.
- * flashDur: how long the hook overlay shows (seconds) — matches the flash segment length.
+ * Build the legacy body hook banner.
+ *
+ * This is intentionally disabled by default because the approved v8 Shorts body
+ * style is clean split-screen + captions; hook text belongs in frame0/thumbnail
+ * only. Set STREAMER_LEGACY_BODY_HOOK_BANNER=1 for old review/debug renders.
  */
 function buildHookFilters(hookText: string, bannerY: number = 840, flashDur: number = 2): string {
   const [line1, line2] = splitHookText(hookText);
@@ -334,6 +504,72 @@ function getVideoDuration(videoPath: string): number {
   return parseFloat(output.trim());
 }
 
+function getVideoDimensions(videoPath: string): { width: number; height: number } {
+  try {
+    const output = execSync(
+      `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "${videoPath}"`,
+      { encoding: "utf-8" },
+    );
+    const parsed = JSON.parse(output) as { streams?: Array<{ width?: number; height?: number }> };
+    const stream = parsed.streams?.[0];
+    return {
+      width: stream?.width ?? 1920,
+      height: stream?.height ?? 1080,
+    };
+  } catch {
+    return { width: 1920, height: 1080 };
+  }
+}
+
+function scaleRegionForSource(region: Region, sourceW: number, sourceH: number): Region {
+  // Region defaults are authored in 1920x1080 source space. When disk-pressure
+  // downloads use 720p, scale before crop so ffmpeg never sees impossible
+  // dimensions like 1620x1080 on a 1280x720 input.
+  const sx = sourceW / 1920;
+  const sy = sourceH / 1080;
+  const x = Math.max(0, Math.min(sourceW - 10, Math.round(region.x * sx)));
+  const y = Math.max(0, Math.min(sourceH - 10, Math.round(region.y * sy)));
+  const w = Math.max(10, Math.min(sourceW - x, Math.round(region.w * sx)));
+  const h = Math.max(10, Math.min(sourceH - y, Math.round(region.h * sy)));
+  return { x, y, w, h };
+}
+
+function scaleCropXForSource(cropX: number, sourceW: number): number {
+  const portraitW = Math.round(sourceW * 9 / 16);
+  const maxCropX = Math.max(0, sourceW - portraitW);
+  return Math.max(0, Math.min(maxCropX, Math.round(cropX * (sourceW / 1920))));
+}
+
+function buildFrame0HookFilters(hookText: string): string {
+  const [line1, line2] = splitHookText(hookText.toUpperCase());
+  const filters: string[] = [];
+  const font = "C\\:/Windows/Fonts/impact.ttf";
+
+  if (line2) {
+    filters.push(
+      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=82:fontcolor=white:borderw=7:bordercolor=black:x=(w-text_w)/2:y=1518`,
+    );
+    filters.push(
+      `drawtext=text='${escapeDrawtext(line2)}':fontfile='${font}':fontsize=98:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1628`,
+    );
+  } else {
+    filters.push(
+      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=92:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1600`,
+    );
+  }
+
+  return filters.join(",");
+}
+
+function buildFrame0AvatarFreeze(frame0HookText: string, avatarRegion?: Region): string {
+  if (isUsableRegion(avatarRegion)) {
+    const cropW = Math.max(2, Math.floor(avatarRegion.w / 2) * 2);
+    const cropH = Math.max(2, Math.floor(avatarRegion.h / 2) * 2);
+    return `crop=${cropW}:${cropH}:${avatarRegion.x}:${avatarRegion.y},scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:(iw-1080)/2:(ih-1920)/2,setsar=1,${buildFrame0HookFilters(frame0HookText)}`;
+  }
+  return `crop=trunc(ih*9/16/2)*2:ih:0:0,scale=1080:1920,setsar=1,${buildFrame0HookFilters(frame0HookText)}`;
+}
+
 /**
  * Build filter_complex for gameplay mode.
  * Avatar top 40% (1080x768) + gameplay bottom 60% (1080x1152) with divider + hook + captions.
@@ -350,58 +586,95 @@ function buildGameplayFilterComplex(
   gameplayH?: number,
   flashDur?: number,
   motionFilter?: string | null,
+  assPath?: string | null,
+  frame0HookText?: string,
 ): string {
-  const gx = gameplayX ?? 320;
+  const gx = gameplayX ?? 0;
   const gy = gameplayY ?? 0;
   const gw = gameplayW ?? 1920;
   const gh = gameplayH ?? 1080;
-  let filterChain =
-    `[0:v]split[v1][v2];` +
-    `[v1]crop=${avatarW}:${avatarH}:${avatarX}:${avatarY},scale=-2:768,crop=1080:768[avatar];` +
-    `[v2]crop=${gw}:${gh}:${gx}:${gy},scale=-2:1152,crop=1080:1152[gameplay];` +
-    `[avatar][gameplay]vstack[stacked];` +
-    `[stacked]drawbox=y=766:w=1080:h=4:color=white@0.15:t=fill`;
+
+  const hasAvatar = avatarW > 0 && avatarH > 0;
+
+  let filterChain: string;
+  if (hasAvatar) {
+    filterChain =
+      `[0:v]split[v1][v2];` +
+      `[v1]crop=${avatarW}:${avatarH}:${avatarX}:${avatarY},scale=1080:768:force_original_aspect_ratio=increase,crop=1080:768:(iw-1080)/2:ih-768[avatar];` +
+      `[v2]crop=${gw}:${gh}:${gx}:${gy},scale=1080:1152:force_original_aspect_ratio=increase,crop=1080:1152:(iw-1080)/2:(ih-1152)/2[gameplay];` +
+      `[avatar][gameplay]vstack[stacked];` +
+      `[stacked]drawbox=y=766:w=1080:h=4:color=white@0.15:t=fill`;
+  } else {
+    filterChain =
+      `[0:v]crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920`;
+  }
 
   if (motionFilter) {
-    // Close the composite chain then run zoompan before the hook overlay so
-    // the hook banner text stays pinned to absolute pixel coords.
     filterChain += `[composite];[composite]${motionFilter}`;
   }
 
-  if (hookText) {
-    filterChain += `,${buildHookFilters(hookText, 840, flashDur ?? 2)}[final]`;
-  } else {
-    filterChain += `[final]`;
+  if (hookText && ENABLE_LEGACY_BODY_HOOK_BANNER) {
+    filterChain += `,${buildHookFilters(hookText, hasAvatar ? 840 : 1700, flashDur ?? 2)}`;
   }
 
+  if (assPath) {
+    const assEscaped = escapePath(assPath);
+    filterChain += `,subtitles='${assEscaped}'`;
+  }
+
+  filterChain += `,setsar=1[final]`;
   return filterChain;
 }
 
 /**
  * Build filter_complex for talking mode.
- * Clean 9:16 crop centered on avatar, scaled to 1080x1920. No blur frame.
+ * Clean 9:16 crop centered on avatar region, scaled to 1080x1920.
+ * Uses avatar center as crop anchor when avatarRegion is provided.
  */
 function buildTalkingFilterComplex(
   hookText?: string,
-  cropX?: number,
+  avatarX?: number,
+  avatarY?: number,
+  avatarW?: number,
+  avatarH?: number,
   flashDur?: number,
   motionFilter?: string | null,
+  assPath?: string | null,
+  frame0HookText?: string,
 ): string {
-  // 9:16 crop from source: width = height * 9/16.  Full height (ih), width auto.
-  const cx = cropX ?? 0;
+  // Talking clips should feel like a single panel of Peanut's avatar, not a
+  // generic center crop of the whole 16:9 stream. Use the avatar region as an
+  // anchor and build a portrait crop around it.
+  const avatar = normalizeAvatarRegion(
+    avatarX != null && avatarY != null && avatarW != null && avatarH != null
+      ? { x: avatarX, y: avatarY, w: avatarW, h: avatarH }
+      : null,
+  );
+  // Clamp avatar crop to actual source dimensions (source is 1280x720 for Daily Peanut)
+  const maxSourceW = 1280;
+  const maxSourceH = 720;
+  const cropH = Math.round(Math.max(320, Math.min(maxSourceH, avatar.h * 1.45)));
+  const cropW = Math.round(cropH * 9 / 16);
+  const cropX = Math.max(0, Math.min(maxSourceW - cropW, Math.round(avatar.x + avatar.w / 2 - cropW / 2)));
+  const cropY = Math.max(0, Math.min(maxSourceH - cropH, Math.round(avatar.y + avatar.h / 2 - cropH / 2)));
+
   let filterChain =
-    `[0:v]crop=ih*9/16:ih:${cx}:0,scale=1080:1920`;
+    `[0:v]crop=${cropW}:${cropH}:${cropX}:${cropY},scale=1080:1920`;
 
   if (motionFilter) {
     filterChain += `[scaled];[scaled]${motionFilter}`;
   }
 
-  if (hookText) {
-    filterChain += `,${buildHookFilters(hookText, 1700, flashDur ?? 2)}[final]`;
-  } else {
-    filterChain += `[final]`;
+  if (hookText && ENABLE_LEGACY_BODY_HOOK_BANNER) {
+    filterChain += `,${buildHookFilters(hookText, 1700, flashDur ?? 2)}`;
   }
 
+  if (assPath) {
+    const assEscaped = escapePath(assPath);
+    filterChain += `,subtitles='${assEscaped}'`;
+  }
+
+  filterChain += `,setsar=1[final]`;
   return filterChain;
 }
 
@@ -428,6 +701,8 @@ function renderClipFfmpeg(
     assPath: string | null;
     duration: number;
     hookText?: string;
+    frame0HookText?: string;
+    frame0Avatar?: Region;
     motionPlan?: MotionPlan | null;
   },
 ): void {
@@ -452,40 +727,73 @@ function renderClipFfmpeg(
           options.gameplayH,
           flashDur,
           motionFilter,
+          options.assPath,
         )
-      : buildTalkingFilterComplex(options.hookText, options.cropX, flashDur, motionFilter);
+      : buildTalkingFilterComplex(
+          options.hookText,
+          options.avatarX,
+          options.avatarY,
+          options.avatarW,
+          options.avatarH,
+          flashDur,
+          motionFilter,
+          options.assPath,
+        );
+
+  // Write filter_complex to temp file to avoid shell escaping issues on Windows.
+  // If frame0HookText is present, render the normal body first, then replace
+  // only frame 0 with the full-avatar hook frame. YouTube Shorts uses the first
+  // frame as its default thumbnail, while viewers still get the split/talking
+  // layout immediately after.
+  const tmpFilterPath = outputPath + ".fc.txt";
+  const bodyOutputPath = options.frame0HookText ? outputPath.replace(/\.mp4$/i, ".body-tmp.mp4") : outputPath;
+  writeFileSync(tmpFilterPath, filterComplex, "utf-8");
 
   const cmd = [
     `ffmpeg`,
     `-i "${clipPath}"`,
-    `-filter_complex "${filterComplex}"`,
+    `-filter_complex_script "${tmpFilterPath}"`,
     `-map "[final]:v"`,
     `-map "0:a"`,
     `-af "loudnorm=I=-16:TP=-1.5:LRA=11"`,
     `-s 1080:1920`,
     `-c:v libx264 -preset fast -crf 18`,
     `-c:a aac -b:a 192k`,
-    `-y "${outputPath}"`,
+    `-y "${bodyOutputPath}"`,
   ].join(" ");
 
-  execSync(cmd, { stdio: "inherit", timeout: 300000 });
+  try {
+    execSync(cmd, { stdio: "inherit", timeout: 300000 });
+  } finally {
+    try { unlinkSync(tmpFilterPath); } catch { /* ignore */ }
+  }
 
-  // Pass 2: Burn in ASS karaoke subtitles
-  if (options.assPath && existsSync(options.assPath)) {
-    const assEscaped = escapePath(options.assPath);
-    const tmpPath = outputPath + ".tmp.mp4";
+  if (options.frame0HookText) {
+    const frame0FilterPath = outputPath + ".frame0.fc.txt";
+    const frame0Filter =
+      `[1:v]select='eq(n,0)',${buildFrame0AvatarFreeze(options.frame0HookText, options.frame0Avatar)},loop=loop=1:size=1:start=0,trim=duration=0.034,setpts=PTS-STARTPTS[f0];` +
+      `[0:v]trim=start_frame=1,setpts=PTS-STARTPTS[rest];` +
+      `[f0][rest]concat=n=2:v=1:a=0[final]`;
+    writeFileSync(frame0FilterPath, frame0Filter, "utf-8");
+    const frame0Cmd = [
+      `ffmpeg`,
+      `-i "${bodyOutputPath}"`,
+      `-i "${clipPath}"`,
+      `-filter_complex_script "${frame0FilterPath}"`,
+      `-map "[final]:v"`,
+      `-map "0:a?"`,
+      `-s 1080:1920`,
+      `-c:v libx264 -preset fast -crf 18`,
+      `-c:a copy`,
+      `-shortest`,
+      `-y "${outputPath}"`,
+    ].join(" ");
     try {
-      // Rename to temp, then apply subtitles
-      renameSync(outputPath, tmpPath);
-      const subCmd = `ffmpeg -i "${tmpPath}" -vf "subtitles='${assEscaped}'" -c:a copy -c:v libx264 -preset fast -crf 18 -y "${outputPath}"`;
-      execSync(subCmd, { stdio: "inherit", timeout: 300000 });
-      unlinkSync(tmpPath);
-    } catch (err) {
-      log.warn("Subtitle pass failed, keeping version without captions");
-      if (existsSync(tmpPath)) {
-        try { unlinkSync(outputPath); } catch { /* ignore */ }
-        renameSync(tmpPath, outputPath);
-      }
+      execSync(frame0Cmd, { stdio: "inherit", timeout: 300000 });
+      log.info(`  Frame0 thumbnail hook: "${options.frame0HookText}"`);
+    } finally {
+      try { unlinkSync(frame0FilterPath); } catch { /* ignore */ }
+      try { unlinkSync(bodyOutputPath); } catch { /* ignore */ }
     }
   }
 
@@ -537,17 +845,22 @@ async function renderFromTrimmer(
     log.error("trim-results.json not found — run the clip trimmer first");
     process.exit(1);
   }
-  if (!existsSync(trimStatePath)) {
-    log.error("trim-state.json not found — run the clip trimmer first");
-    process.exit(1);
-  }
 
   const trimResults: { approved: TrimResultEntry[]; streamId: string } =
     JSON.parse(readFileSync(trimResultsPath, "utf-8"));
-  const trimStateRaw: { layoutState: Record<string, TrimLayoutState> } =
-    JSON.parse(readFileSync(trimStatePath, "utf-8"));
-
-  const layoutState = trimStateRaw.layoutState;
+  const streamId = trimResults.streamId;
+  const layoutState: Record<string, TrimLayoutState> = {};
+  if (existsSync(trimStatePath)) {
+    try {
+      const trimStateRaw: { layoutState?: Record<string, TrimLayoutState> } =
+        JSON.parse(readFileSync(trimStatePath, "utf-8"));
+      Object.assign(layoutState, trimStateRaw.layoutState ?? {});
+    } catch {
+      log.warn("trim-state.json unreadable — using final v8 default layout");
+    }
+  } else {
+    log.warn("trim-state.json missing — using final v8 default layout");
+  }
 
   const rawClipsDir = join(streamDir, "raw-clips");
   const whisperDir = join(streamDir, "whisper-captions");
@@ -564,8 +877,12 @@ async function renderFromTrimmer(
 
   // Load hook texts
   const hookTexts = parseHookTexts(streamDir);
+  const frame0Hooks = parseFrame0Hooks(streamDir);
   if (hookTexts.size > 0) {
     log.info(`Loaded ${hookTexts.size} hook texts from upload-metadata.md`);
+  }
+  if (frame0Hooks.size > 0) {
+    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
   }
 
   const summary: Array<{ file: string; duration: number; layout: string }> = [];
@@ -585,10 +902,13 @@ async function renderFromTrimmer(
     }
 
     // Default layout if trimmer didn't set one
+    const sourceDims = getVideoDimensions(rawClipPath);
     const mode: "gameplay" | "talking" = layout?.mode ?? "gameplay";
-    const cropX = layout?.cropX ?? 0;
-    const avatar = layout?.avatar ?? { x: 100, y: 720, w: 560, h: 360 };
-    const gameplay = layout?.gameplay ?? { x: 200, y: 0, w: 1520, h: 1080 };
+    const cropX = scaleCropXForSource(layout?.cropX ?? 0, sourceDims.width);
+    const avatarDefault = layout?.avatar ?? defaultAvatarRegion(streamId);
+    const avatar = scaleRegionForSource(avatarDefault, sourceDims.width, sourceDims.height);
+    const gameplay = scaleRegionForSource(layout?.gameplay ?? defaultGameplayRegion(streamId, rank), sourceDims.width, sourceDims.height);
+    const frame0Avatar = scaleRegionForSource(defaultFrame0AvatarRegion(streamId, avatarDefault), sourceDims.width, sourceDims.height);
 
     log.info(`  Layout: ${mode}, flashDur=${clip.flashDuration.toFixed(2)}s, content=${clip.contentStart.toFixed(2)}-${clip.contentEnd.toFixed(2)}s`);
 
@@ -656,8 +976,12 @@ async function renderFromTrimmer(
     // Step 4: Render 9:16 short
     const shortPath = join(shortsDir, clip.clipFile);
     const hookText = hookTexts.get(rank);
+    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
     if (hookText) {
       log.info(`  Hook: "${hookText}"`);
+    }
+    if (frame0HookText) {
+      log.info(`  Frame0 hook: "${frame0HookText}"`);
     }
 
     const assembledDuration = getVideoDuration(assembledPath);
@@ -686,6 +1010,8 @@ async function renderFromTrimmer(
       assPath: assFilePath,
       duration: assembledDuration,
       hookText,
+      frame0HookText,
+      frame0Avatar,
       motionPlan,
     });
 
@@ -725,8 +1051,9 @@ async function renderDirect(
     process.exit(1);
   }
 
-  const trimResults: { approved: TrimResultEntry[] } =
+  const trimResults: { approved: TrimResultEntry[]; streamId?: string } =
     JSON.parse(readFileSync(trimResultsPath, "utf-8"));
+  const streamId = trimResults.streamId;
 
   // Load layout state if available (may be partial — defaults fill in gaps)
   const trimStatePath = join(streamDir, "trim-state.json");
@@ -751,6 +1078,10 @@ async function renderDirect(
   log.info(`Rendering ${clipsToRender.length} clips directly from raw-clips/`);
 
   const hookTexts = parseHookTexts(streamDir);
+  const frame0Hooks = parseFrame0Hooks(streamDir);
+  if (frame0Hooks.size > 0) {
+    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
+  }
 
   const summary: Array<{ file: string; duration: number; layout: string }> = [];
 
@@ -771,16 +1102,21 @@ async function renderDirect(
     const remainingFlash = Math.max(0, clip.flashDuration - STRIP_OFFSET);
     log.info(`  Original flash: ${clip.flashDuration.toFixed(2)}s → remaining after strip: ${remainingFlash.toFixed(2)}s`);
 
-    // Layout: per-clip from trim-state, otherwise channel defaults
+    // Layout: per-clip from trim-state, otherwise channel defaults.
+    // Region defaults are authored for 1080p source frames; scale to actual
+    // raw clip dimensions (720p downloads otherwise crash ffmpeg crop).
     const layout: TrimLayoutState | undefined = layoutState[String(rank - 1)];
+    const sourceDims = getVideoDimensions(rawClipPath);
     const mode: "gameplay" | "talking" = layout?.mode ?? "gameplay";
-    const cropX = layout?.cropX ?? 0;
-    const avatar = layout?.avatar ?? { x: 100, y: 720, w: 560, h: 360 };
-    const gameplay = layout?.gameplay ?? { x: 200, y: 0, w: 1520, h: 1080 };
-    log.info(`  Layout: ${mode}`);
+    const cropX = scaleCropXForSource(layout?.cropX ?? 0, sourceDims.width);
+    const avatarDefault = layout?.avatar ?? defaultAvatarRegion(streamId);
+    const avatar = scaleRegionForSource(avatarDefault, sourceDims.width, sourceDims.height);
+    const gameplay = scaleRegionForSource(layout?.gameplay ?? defaultGameplayRegion(streamId, rank), sourceDims.width, sourceDims.height);
+    const frame0Avatar = scaleRegionForSource(defaultFrame0AvatarRegion(streamId, avatarDefault), sourceDims.width, sourceDims.height);
+    log.info(`  Layout: ${mode} (${sourceDims.width}x${sourceDims.height} source)`);
 
-    // Hook overlay always shows for exactly 2 seconds regardless of remaining flash.
-    // Captions start at 2s so they don't overlap the hook banner.
+    // Captions start after the frame0/hook beat. The legacy body hook banner is
+    // disabled by default; don't re-enable it for v8 style renders.
     const HOOK_SECS = 2;
 
     let assFilePath: string | null = null;
@@ -810,7 +1146,9 @@ async function renderDirect(
     const clipDuration = getVideoDuration(rawClipPath);
     const shortPath = join(shortsDir, clip.clipFile);
     const hookText = hookTexts.get(rank);
+    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
     if (hookText) log.info(`  Hook: "${hookText}"`);
+    if (frame0HookText) log.info(`  Frame0 hook: "${frame0HookText}"`);
 
     const motionPlan = noMotion
       ? null
@@ -835,6 +1173,8 @@ async function renderDirect(
       assPath: assFilePath,
       duration: clipDuration,
       hookText,
+      frame0HookText,
+      frame0Avatar,
       motionPlan,
     });
 
@@ -886,6 +1226,9 @@ async function main(): Promise<void> {
   const noEmojis = !!args["no-emojis"];
   const srtPath = args.srt as string | undefined;
   const layoutOverride = args.layout as LayoutMode | undefined;
+  if (layoutOverride && layoutOverride !== "gameplay" && layoutOverride !== "talking") {
+    throw new Error(`Invalid --layout value: ${layoutOverride}. Use 'gameplay' or 'talking'.`);
+  }
   const fromTrimmer = !!args["from-trimmer"];
   const direct = !!args["direct"];
 
@@ -901,6 +1244,7 @@ async function main(): Promise<void> {
       ? (clipsArg as string).split(",").map((s) => parseInt(s.trim(), 10))
       : null;
     await renderDirect(streamDir, noCaptions, clipFilter, noMotion, noEmojis);
+    markRendered(streamId);
     return;
   }
 
@@ -911,6 +1255,7 @@ async function main(): Promise<void> {
       ? (clipsArg as string).split(",").map((s) => parseInt(s.trim(), 10))
       : null;
     await renderFromTrimmer(streamDir, noCaptions, clipFilter, noMotion, noEmojis);
+    markRendered(streamId);
     return;
   }
 
@@ -921,6 +1266,21 @@ async function main(): Promise<void> {
 
   const manifest = loadManifest(streamId);
   const streamDir = getStreamDir(streamId);
+
+  // Probe source video dimensions to clamp regions
+  let sourceW = 1920;
+  let sourceH = 1080;
+  try {
+    const probe = execSync(
+      `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of json "${manifest.videoPath}"`,
+      { encoding: "utf8" },
+    );
+    const parsed = JSON.parse(probe);
+    sourceW = parsed.streams?.[0]?.width ?? 1920;
+    sourceH = parsed.streams?.[0]?.height ?? 1080;
+  } catch {
+    /* fallback to defaults */
+  }
 
   // Load moments: prefer unified-moments.json, fall back to moments.json
   const unifiedPath = join(streamDir, "unified-moments.json");
@@ -1003,19 +1363,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Load channel config (avatar/gameplay regions)
+  // Load channel config (avatar/gameplay regions). Empty/missing config uses
+  // the final v8 Daily Peanut defaults above.
   const config = loadChannelConfig();
-  const avatarRegion = config?.avatarRegion || {
-    x: 24,
-    y: 24,
-    w: 380,
-    h: 380,
-  };
-  const gameplayRegion = config?.gameplayRegion || {
-    x: 0,
-    y: 0,
-    w: 1920,
-    h: 1080,
+  const avatarRegion = normalizeAvatarRegion(config?.avatarRegion);
+  const rawGameplayRegion = normalizeGameplayRegion(config?.gameplayRegion);
+  // Clamp gameplay region to actual source dimensions to prevent ffmpeg crop errors
+  // when channel config has larger regions than the source resolution (e.g. 1520x1440 on 1280x720)
+  const gameplayRegion = {
+    x: Math.max(0, Math.min(rawGameplayRegion.x, sourceW - 10)),
+    y: Math.max(0, Math.min(rawGameplayRegion.y, sourceH - 10)),
+    w: Math.max(10, Math.min(rawGameplayRegion.w, sourceW - rawGameplayRegion.x)),
+    h: Math.max(10, Math.min(rawGameplayRegion.h, sourceH - rawGameplayRegion.y)),
   };
 
   // Load subtitles if available
@@ -1041,10 +1400,14 @@ async function main(): Promise<void> {
   const clipManifest: Array<{ rank: number; contentStart: number; contentDur: number }> =
     existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : [];
 
-  // Parse upload-metadata.md for hook texts
+  // Parse upload-metadata.md/json for hook texts
   const hookTexts = parseHookTexts(streamDir);
+  const frame0Hooks = parseFrame0Hooks(streamDir);
   if (hookTexts.size > 0) {
     log.info(`Loaded ${hookTexts.size} hook texts from upload-metadata.md`);
+  }
+  if (frame0Hooks.size > 0) {
+    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
   }
 
   const summary: Array<{
@@ -1165,10 +1528,14 @@ async function main(): Promise<void> {
     // Get hook text: CLI override > upload-metadata > unified-moments.json > none
     const unifiedHook = unifiedEntries?.[idx]?.hookText;
     const hookText = (args["hook-text"] as string) || hookTexts.get(rank) || unifiedHook || undefined;
+    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
     if (hookText) {
       log.info(`  Hook: "${hookText}"`);
     } else {
       log.warn(`  No hook text for clip #${rank}`);
+    }
+    if (frame0HookText) {
+      log.info(`  Frame0 hook: "${frame0HookText}"`);
     }
 
     // Render via ffmpeg — output uses same basename as raw clip
@@ -1196,6 +1563,7 @@ async function main(): Promise<void> {
       assPath: assFilePath,
       duration: clipDuration,
       hookText,
+      frame0HookText,
       motionPlan,
     });
 
@@ -1213,6 +1581,7 @@ async function main(): Promise<void> {
       `${item.file} (${item.duration.toFixed(1)}s, ${item.layout})`,
     );
   }
+  markRendered(streamId);
 }
 
 main().catch((err) => {

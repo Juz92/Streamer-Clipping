@@ -4,11 +4,14 @@ import { join } from "path";
 import { createLogger, ensureDir, DATA_DIR } from "@ltx/shared";
 import { getStreamDir, saveManifest } from "./lib/manifest.js";
 import type { StreamManifest } from "./lib/manifest.js";
+import { extractHeatmap, saveHeatmap, loadHeatmap, type HeatPoint } from "./lib/heatmap-extractor.js";
+
 
 const log = createLogger("discover");
 
 const DEFAULT_CHANNEL = "https://www.youtube.com/@TheBurntPeanut";
 const YT_DLP = process.env.YT_DLP_CMD ?? "python -m yt_dlp";
+const YT_DLP_FORMAT = process.env.YT_DLP_FORMAT ?? "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/best[height<=1080]";
 
 const args = process.argv.slice(2);
 const listMode = args.indexOf("--list") !== -1;
@@ -16,7 +19,7 @@ const urlIdx = args.indexOf("--url");
 const urlArg = urlIdx !== -1 ? args[urlIdx + 1] : null;
 
 function extractVideoId(url: string): string | null {
-  const match = url.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  const match = url.match(/(?:v=|youtu\.be\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
 }
 
@@ -114,7 +117,7 @@ async function download(): Promise<void> {
     log.info("Downloading video (this may take a while)...");
     try {
       run(
-        `${YT_DLP} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "${videoPath}" "https://youtube.com/watch?v=${streamId}"`,
+        `${YT_DLP} -f "${YT_DLP_FORMAT}" -o "${videoPath}" "https://youtube.com/watch?v=${streamId}"`,
         { timeout: 0, stdio: "inherit" },
       );
       log.info("Video download complete");
@@ -164,6 +167,22 @@ async function download(): Promise<void> {
     log.warn(`Live chat download failed: ${err.message}`);
   }
 
+  // Extract YouTube "most replayed" heatmap
+  let heatmap: HeatPoint[] | null = null;
+  log.info("Extracting most-replayed heatmap...");
+  try {
+    const heatResult = await extractHeatmap(streamId);
+    if (heatResult && heatResult.points.length > 0) {
+      heatmap = heatResult.points;
+      const heatmapPath = saveHeatmap(heatResult, sourceDir);
+      log.info(`Heatmap saved: ${heatmapPath} (${heatmap.length} points)`);
+    } else {
+      log.warn("No heatmap available (video may be too new or have insufficient views)");
+    }
+  } catch (err: any) {
+    log.warn(`Heatmap extraction failed: ${err.message}`);
+  }
+
   // Write manifest
   const manifest: StreamManifest = {
     streamId,
@@ -177,6 +196,7 @@ async function download(): Promise<void> {
     chatPath,
     audioLevelsPath: null,
     momentsPath: null,
+    heatmapPath: heatmap ? join(sourceDir, `heatmap-${streamId}.json`) : null,
     phase: "downloaded",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -192,6 +212,7 @@ async function download(): Promise<void> {
   console.log(`  Video:     ${existsSync(videoPath) ? "OK" : "MISSING"}`);
   console.log(`  Subtitles: ${subtitlePath ? "OK" : "not available"}`);
   console.log(`  Chat:      ${chatPath ? "OK" : "not available"}`);
+  console.log(`  Heatmap:   ${heatmap ? `OK (${heatmap.length} points)` : "not available"}`);
   console.log(`  Directory: ${dir}`);
   console.log();
 }

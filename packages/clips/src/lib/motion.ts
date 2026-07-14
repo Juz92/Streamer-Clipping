@@ -63,6 +63,7 @@ const SEAM_PEAK = 0.08;
 const SEAM_FALL = 0.4;
 const KEN_BURNS_TALKING = 0.04;
 const MIN_PUNCH_GAP_SEC = 3.5;
+const DEFAULT_FPS = 30;
 
 function matchesKeyword(phrase: string, words: WhisperWord[], fromIdx: number): number {
   const phraseTokens = phrase.toLowerCase().split(/\s+/).filter(Boolean);
@@ -119,12 +120,12 @@ export function findKeywordPunches(words: WhisperWord[], flashDurSec: number): P
 /**
  * Build the zoompan z-expression for the whole clip.
  *
- * Output value is the zoom factor at time `t`:
- *   z = 1 + max( kenBurnsOffset(t), punch1Offset(t), punch2Offset(t), ... )
+ * Output value is the zoom factor at output frame time `on / fps`:
+ *   z = 1 + kenBurnsOffset + punch1Offset + punch2Offset + ...
  *
  * Each punch uses an ease-out cubic: the zoom peaks instantly at `atSec` and
- * decays to zero over `durationSec`. Summing via `max` means overlapping
- * punches don't additively blow up past reasonable zoom levels.
+ * decays to zero over `durationSec`. Punches are gap-deduped, so flat
+ * addition avoids ffmpeg zoompan parser crashes from comma-based max()/pow().
  */
 export function buildZoomExpr(
   events: PunchEvent[],
@@ -134,27 +135,33 @@ export function buildZoomExpr(
   const parts: string[] = [];
 
   if (kenBurnsRange > 0 && totalDurSec > 0) {
-    parts.push(`(${kenBurnsRange}*t/${totalDurSec.toFixed(3)})`);
+    parts.push(`(${kenBurnsRange}*(on/${DEFAULT_FPS})/${totalDurSec.toFixed(3)})`);
   }
 
   for (const e of events) {
     const start = e.atSec.toFixed(3);
+    const end = (e.atSec + e.durationSec).toFixed(3);
     const dur = e.durationSec.toFixed(3);
     const peak = e.peak.toFixed(3);
-    // ease-out cubic: peak * (1 - u)^3 where u = (t - start) / dur, gated to [start, start+dur]
-    const u = `(t-${start})/${dur}`;
-    const eased = `${peak}*(1-${u})*(1-${u})*(1-${u})`;
-    parts.push(`if(between(t,${start},${start}+${dur}),${eased},0)`);
+    const t = `(on/${DEFAULT_FPS})`;
+    // Gate: active only between start and start+duration. Commas must be
+    // escaped because this expression is embedded inside an ffmpeg filter
+    // chain/script where raw commas split filters/options.
+    const gate = `between(${t}\\,${start}\\,${end})`;
+    // Ease-out cubic: peak at start, decays to zero over duration.
+    // Use explicit multiplication instead of ^ or pow(), because zoompan's
+    // expression parser rejects ^ and comma escaping makes pow() fragile.
+    const decay = `(1-(${t}-${start})/${dur})`;
+    const eased = `${gate}*${peak}*${decay}*${decay}*${decay}`;
+    parts.push(eased);
   }
 
   if (parts.length === 0) return "1";
 
-  // Nest max() calls — ffmpeg's expression parser only accepts 2-arg max().
-  let expr = parts[0];
-  for (let i = 1; i < parts.length; i++) {
-    expr = `max(${expr},${parts[i]})`;
-  }
-  return `1+${expr}`;
+  // Flat addition — no commas, no nested max() calls.
+  // zoompan uses : as parameter separator, so commas in expressions crash.
+  // Punches don't overlap (MIN_PUNCH_GAP_SEC), so addition is safe.
+  return `1+${parts.join("+")}`;
 }
 
 /**
@@ -203,10 +210,12 @@ export function buildZoompanFilter(
   outputH = 1920,
   fps = 30,
 ): string | null {
+  // FIXED: Expression now uses flat addition instead of nested max() calls,
+  // avoiding commas that crash ffmpeg's zoompan parser.
   if (plan.events.length === 0 && plan.kenBurnsRange === 0) return null;
   const z = buildZoomExpr(plan.events, totalDurSec, plan.kenBurnsRange);
   return (
-    `zoompan=z='${z}':d=1:` +
+    `fps=${fps},zoompan=z='${z}':d=1:` +
     `x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
     `s=${outputW}x${outputH}:fps=${fps}`
   );

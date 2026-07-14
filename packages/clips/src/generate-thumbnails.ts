@@ -23,16 +23,22 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { createLogger, ensureDir } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
+import { parseAudioLevels } from "./lib/audio-analyzer.js";
 
 const log = createLogger("thumbs");
 
 interface MomentLike {
-  startSec: number;
-  endSec: number;
+  startSec?: number;
+  endSec?: number;
+  suggestedStartSec?: number;
+  suggestedEndSec?: number;
+  suggestedDurationSec?: number;
   hook?: string;
   hookText?: string;
   description?: string;
   thumbnailSec?: number;
+  coldOpenSec?: number;
+  naturalEndSec?: number;
 }
 
 function parseArgs(): { streamId?: string; clips?: number[]; force: boolean } {
@@ -131,13 +137,48 @@ function extractThumb(
 function loadMoments(streamDir: string): MomentLike[] {
   const nlmPath = join(streamDir, "notebooklm-moments.json");
   const unifiedPath = join(streamDir, "unified-moments.json");
+  const momentsPath = join(streamDir, "moments.json");
   if (existsSync(nlmPath)) {
-    return JSON.parse(readFileSync(nlmPath, "utf-8")) as MomentLike[];
+    const parsed = JSON.parse(readFileSync(nlmPath, "utf-8")) as MomentLike[];
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
   }
   if (existsSync(unifiedPath)) {
-    return JSON.parse(readFileSync(unifiedPath, "utf-8")) as MomentLike[];
+    const parsed = JSON.parse(readFileSync(unifiedPath, "utf-8")) as MomentLike[];
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
   }
-  throw new Error("No notebooklm-moments.json or unified-moments.json found");
+  if (existsSync(momentsPath)) {
+    return JSON.parse(readFileSync(momentsPath, "utf-8")) as MomentLike[];
+  }
+  throw new Error("No notebooklm-moments.json, unified-moments.json, or moments.json found");
+}
+
+/**
+ * Find the timestamp with peak audio energy within a clip's range.
+ * Uses RMS audio data when available; falls back to midpoint.
+ * Biases slightly before the peak (0.3s) to catch the reaction face
+ * rather than the post-peak calm.
+ */
+function findPeakThumbTime(
+  startSec: number,
+  endSec: number,
+  audioSamples: { timeSec: number; rmsLevel: number }[] | null,
+): number {
+  if (!audioSamples || audioSamples.length === 0) {
+    return (startSec + endSec) / 2;
+  }
+
+  const inRange = audioSamples.filter((s) => s.timeSec >= startSec && s.timeSec <= endSec);
+  if (inRange.length === 0) return (startSec + endSec) / 2;
+
+  let peakSample = inRange[0];
+  for (const s of inRange) {
+    if (s.rmsLevel > peakSample.rmsLevel) {
+      peakSample = s;
+    }
+  }
+
+  const biasedPeak = Math.max(startSec, peakSample.timeSec - 0.3);
+  return Math.min(biasedPeak, endSec);
 }
 
 function findRenderedShort(shortsDir: string, rank: number): string | null {
@@ -166,6 +207,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Load audio levels for peak-frame detection
+  const audioLevelsPath = join(streamDir, "audio_levels.txt");
+  const audioSamples = existsSync(audioLevelsPath) ? parseAudioLevels(audioLevelsPath) : null;
+  if (audioSamples) {
+    log.info(`Loaded audio levels: ${audioSamples.length} samples`);
+  }
+
   const moments = loadMoments(streamDir);
   const shortsDir = join(streamDir, "shorts");
   const thumbsDir = join(shortsDir, "thumbnails");
@@ -189,14 +237,55 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Pick the frame time: explicit thumbnailSec from NLM enrichment wins,
-    // otherwise fall back to the midpoint of the signal range.
-    const midpoint = (m.startSec + m.endSec) / 2;
-    const atSec = typeof m.thumbnailSec === "number" && m.thumbnailSec > 0
-      ? m.thumbnailSec
-      : midpoint;
+    const startSec = typeof m.startSec === "number" ? m.startSec : m.suggestedStartSec;
+    const endSec = typeof m.endSec === "number"
+      ? m.endSec
+      : typeof m.suggestedEndSec === "number"
+        ? m.suggestedEndSec
+        : typeof startSec === "number" && typeof m.suggestedDurationSec === "number"
+          ? startSec + m.suggestedDurationSec
+          : undefined;
 
-    const hookText = m.hook ?? m.hookText ?? m.description ?? "";
+    if (typeof startSec !== "number" || typeof endSec !== "number" || endSec <= startSec) {
+      failed++;
+      log.error(`[${rank}] Missing usable start/end seconds — skipping thumbnail`);
+      continue;
+    }
+
+    // Pick the frame time with a stronger viral bias.
+    // Priority:
+    // 1. explicit thumbnailSec from enrichment
+    // 2. audio-peak frame within the clip (catches reaction face at max energy)
+    // 3. cold-open / flash anchor
+    // 4. late-payoff frame near natural end
+    // 5. midpoint fallback
+    const midpoint = (startSec + endSec) / 2;
+    const audioPeak = findPeakThumbTime(startSec, endSec, audioSamples);
+    const flashFrame = typeof m.coldOpenSec === "number" && m.coldOpenSec > 0
+      ? m.coldOpenSec
+      : undefined;
+    const payoffFrame = typeof m.naturalEndSec === "number" && m.naturalEndSec > 1.5
+      ? Math.max(startSec + 1, m.naturalEndSec - 1.2)
+      : undefined;
+
+    let atSec: number;
+    if (typeof m.thumbnailSec === "number" && m.thumbnailSec > 0) {
+      atSec = m.thumbnailSec;
+      log.info(`[${rank}] Using enriched thumbnailSec=${atSec.toFixed(1)}s`);
+    } else {
+      // Use audio peak unless it's very close to an enriched boundary
+      atSec = audioPeak;
+      log.info(`[${rank}] Using audio-peak frame t=${atSec.toFixed(1)}s (RMS peak in [${startSec.toFixed(1)}-${endSec.toFixed(1)}])`);
+    }
+    // Override with flash/payoff only if no explicit thumbnailSec AND audio peak is weak (near midpoint)
+    if (typeof m.thumbnailSec !== "number" && Math.abs(audioPeak - midpoint) < 1.0) {
+      atSec = flashFrame ?? payoffFrame ?? audioPeak;
+      if (atSec !== audioPeak) {
+        log.info(`[${rank}] Audio peak was near midpoint, switching to ${flashFrame ? 'flash' : 'payoff'} frame t=${atSec.toFixed(1)}s`);
+      }
+    }
+
+    const hookText = "";
 
     try {
       // YouTube: banner at vertical centre (y=1050 puts it just above mid-frame)

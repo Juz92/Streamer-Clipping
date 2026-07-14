@@ -11,7 +11,12 @@ export interface AudioSignal {
   timestampSec: number;
   rmsLevel: number;
   deltaFromAvg: number;
-  type: "spike" | "silence_to_loud";
+  /**
+   * spike: generic loudness jump; silence_to_loud: sudden attack after quiet;
+   * laugh: repeated high-energy pulses consistent with laughter;
+   * shock: scream/gasp/physical-reaction style attack.
+   */
+  type: "spike" | "silence_to_loud" | "laugh" | "shock";
 }
 
 export function extractAudioLevels(videoPath: string, outputPath: string): void {
@@ -62,6 +67,50 @@ export function parseAudioLevels(filePath: string): AudioSample[] {
   return samples;
 }
 
+function localAverage(samples: AudioSample[], centerIdx: number, halfWindowSec: number): number {
+  const center = samples[centerIdx].timeSec;
+  let sum = 0;
+  let count = 0;
+  for (let i = centerIdx; i >= 0 && samples[i].timeSec >= center - halfWindowSec; i--) {
+    sum += samples[i].rmsLevel;
+    count++;
+  }
+  for (let i = centerIdx + 1; i < samples.length && samples[i].timeSec <= center + halfWindowSec; i++) {
+    sum += samples[i].rmsLevel;
+    count++;
+  }
+  return count > 0 ? sum / count : samples[centerIdx].rmsLevel;
+}
+
+function detectLaughBurst(samples: AudioSample[], startIdx: number): AudioSignal | null {
+  const start = samples[startIdx].timeSec;
+  const window: AudioSample[] = [];
+  for (let i = startIdx; i < samples.length && samples[i].timeSec <= start + 3.2; i++) {
+    window.push(samples[i]);
+  }
+  if (window.length < 4) return null;
+
+  const loud = window.filter((s) => s.rmsLevel > -31);
+  const peakCount = window.filter((s, i) => {
+    const prev = i > 0 ? window[i - 1] : null;
+    const next = i < window.length - 1 ? window[i + 1] : null;
+    return s.rmsLevel > -32 && (!prev || s.rmsLevel - prev.rmsLevel >= 3) && (!next || s.rmsLevel >= next.rmsLevel);
+  }).length;
+
+  const levels = window.map((s) => s.rmsLevel);
+  const range = Math.max(...levels) - Math.min(...levels);
+  if (loud.length < 3 || peakCount < 3 || range < 7) return null;
+
+  const strongest = window.reduce((a, b) => (b.rmsLevel > a.rmsLevel ? b : a));
+  const avg = localAverage(samples, startIdx, 6);
+  return {
+    timestampSec: strongest.timeSec,
+    rmsLevel: strongest.rmsLevel,
+    deltaFromAvg: Math.max(strongest.rmsLevel - avg, range),
+    type: "laugh",
+  };
+}
+
 export function detectAudioSpikes(
   samples: AudioSample[],
   windowSec = 30,
@@ -75,6 +124,7 @@ export function detectAudioSpikes(
   let wEnd = 0;
   let windowSum = 0;
   let windowCount = 0;
+  let lastLaughAt = -Infinity;
 
   for (let i = 0; i < samples.length; i++) {
     const s = samples[i];
@@ -92,25 +142,36 @@ export function detectAudioSpikes(
     }
     const avg = windowCount > 0 ? windowSum / windowCount : s.rmsLevel;
     const delta = s.rmsLevel - avg;
+    const prev = i > 0 ? samples[i - 1] : null;
+    const attackDelta = prev ? s.rmsLevel - prev.rmsLevel : 0;
 
     if (delta >= thresholdDb) {
       raw.push({ timestampSec: s.timeSec, rmsLevel: s.rmsLevel, deltaFromAvg: delta, type: "spike" });
     }
 
-    if (i > 0 && samples[i - 1].rmsLevel < -40 && s.rmsLevel > -20) {
-      raw.push({ timestampSec: s.timeSec, rmsLevel: s.rmsLevel, deltaFromAvg: delta, type: "silence_to_loud" });
+    if (prev && prev.rmsLevel < -40 && s.rmsLevel > -20) {
+      raw.push({ timestampSec: s.timeSec, rmsLevel: s.rmsLevel, deltaFromAvg: Math.max(delta, attackDelta), type: "silence_to_loud" });
+    }
+
+    // Shock/gasp/scream heuristic: very abrupt attack into a loud frame.
+    if (prev && attackDelta >= 13 && s.rmsLevel > -27) {
+      raw.push({ timestampSec: s.timeSec, rmsLevel: s.rmsLevel, deltaFromAvg: Math.max(delta, attackDelta), type: "shock" });
+    }
+
+    // Laughter heuristic: repeated high-energy pulses over ~3 seconds.
+    if (s.timeSec - lastLaughAt > 5) {
+      const laugh = detectLaughBurst(samples, i);
+      if (laugh) {
+        raw.push(laugh);
+        lastLaughAt = laugh.timestampSec;
+      }
     }
   }
 
   const merged: AudioSignal[] = [];
-  for (const sig of raw) {
+  for (const sig of raw.sort((a, b) => a.timestampSec - b.timestampSec)) {
     const last = merged[merged.length - 1];
-    if (
-      last &&
-      last.type === "spike" &&
-      sig.type === "spike" &&
-      sig.timestampSec - last.timestampSec <= 3
-    ) {
+    if (last && last.type === sig.type && sig.timestampSec - last.timestampSec <= 3) {
       if (sig.deltaFromAvg > last.deltaFromAvg) {
         merged[merged.length - 1] = sig;
       }

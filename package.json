@@ -8,14 +8,40 @@
   ],
   "scripts": {
     "build": "tsc --build",
+    "analytics:weekly": "tsx packages/clips/src/analytics.ts --all --feedback --since 7",
+    "analytics:feedback": "tsx packages/clips/src/analytics.ts --all --feedback --since 28",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx packages/shared/src/db/migrate.ts",
-    "studio": "npm run studio --workspace=packages/remotion"
+    "studio": "npm run studio --workspace=packages/remotion",
+    "remotion:doctor": "node packages/remotion/scripts/remotion-doctor.mjs",
+    "remotion:smoke": "node packages/remotion/scripts/remotion-smoke.mjs",
+    "remotion:preflight": "node packages/remotion/scripts/media-preflight.mjs",
+    "remotion:contact-sheet": "node packages/remotion/scripts/contact-sheet.mjs",
+    "remotion:qa": "node packages/remotion/scripts/render-qa.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "drizzle-kit": "^0.31.9",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1"
+  },
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Juz92/Streamer-Clipping.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Juz92/Streamer-Clipping/issues"
+  },
+  "homepage": "https://github.com/Juz92/Streamer-Clipping#readme"
 }
