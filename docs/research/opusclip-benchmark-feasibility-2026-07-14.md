@@ -33,23 +33,15 @@ Therefore the cheapest repeatable test is the web app and one exact 60-minute Yo
 
 ### Source
 
-Public VOD: https://www.youtube.com/watch?v=9WJKzVbhFBM
+Public Twitch VOD: https://www.twitch.tv/videos/2809204298
 
-- Title: `PARTY GAME NIGHT`
-- Full duration: 25,638 seconds / 7h 7m 18s
-- Process only `00:10:00–01:10:00` to fit the free 60-credit allowance.
+- Title: `ARENA BREAKOUT: INFINITE | w/ Shroud`
+- Process only `01:30:00–02:30:00`.
+- Independent weak control at `01:52:18`: `"DO I HAVE TO BELIEVE IN MYSELF?"`, 10,286 views. The 25-second clip asks the wizard questions but has no payoff; do not treat it as positive truth.
+- Provisional positive at `02:13:04`: `The Tale of the Tortoise and the Hare w/ Shroud`, 2,490 views. The 59-second clip has a full premise, escalation and final `I'm the fucking tortoise` payoff.
+- A second clip at `01:52:18` is a duplicate anchor and is excluded.
 
-The current pipeline has already processed this VOD in `data/clips/job-006-2026-07-12/recall-candidates.json`. Filtering to the same 60-minute range, sorting by `viralSubScores.blendedFinal`, and dropping candidates with more than 50% overlap gives this fixed top-five baseline:
-
-| Rank | Current-system source window | Score | Candidate |
-|---:|---:|---:|---|
-| 1 | 00:15:00–00:15:28 | 100 | Lockdown protocol — “WE'RE DEAD” |
-| 2 | 00:54:33–00:54:55 | 100 | Believable story of the killer |
-| 3 | 01:00:27–01:00:52 | 100 | Peanut prohibited in sports games |
-| 4 | 01:05:30–01:05:59 | 100 | Gas-canister blow-up threat |
-| 5 | 00:40:00–00:40:21 | 97 | “Where's Peanut?” panic |
-
-These are unreviewed finder outputs, not accepted winners and not benchmark truth. They may be shown beside Opus outputs in an exploratory smoke test, but they cannot measure recall or declare a winner.
+This hour has independently source-aligned crowd evidence plus a same-VOD weak control. Justin must approve the provisional positive before credits are spent. It is sufficient for an exploratory retrieval/boundary smoke test, not a full benchmark.
 
 ### Prompt 1 — humour/social
 
@@ -64,9 +56,9 @@ Use one ClipAnything project and reprompt the completed source. Opus documents r
 ### Comparable candidate budget
 
 - Keep the top five clips from each Opus prompt.
-- Compare with the current system's top five from the same source range.
+- Opus must retrieve the provisional positive with complete setup/payoff boundaries and must not promote the weak control as a complete arc.
+- Compare against the rebuilt custom finder only after candidate identity and beat grounding are fixed; the old finder outputs are not a baseline.
 - Deduplicate overlaps before blind review.
-- Twitch anchors are optional for this first feasibility test because exact same-VOD clip offsets are not currently cached.
 
 ### Metrics
 
@@ -84,7 +76,7 @@ Use one ClipAnything project and reprompt the completed source. Opus documents r
 
 ## Current status
 
-**BLOCKED ON VALID SOURCE RANGE AND OPUS SIGN-IN.** Opus can run a 60-minute exploratory smoke test, but the proposed source range has only unreviewed outputs from the flawed finder. First locate independently accepted, source-aligned moments and choose a range containing them. Then Justin must authenticate the Opus web session; no account, API integration or paid credits should be created speculatively.
+**READY FOR JUSTIN ANCHOR APPROVAL; THEN BLOCKED ON OPUS SIGN-IN/COMPUTER SESSION.** The valid 60-minute source range and exact Twitch offsets are now recorded. Hermes computer-use diagnostics pass, but the current desktop tool session returns an empty `0×0` capture, so no UI benchmark has been claimed. Justin must approve the provisional positive and authenticate Opus; no API integration or paid credits should be created speculatively.
 
 ## Primary sources
 
