@@ -38,10 +38,10 @@ Public Twitch VOD: https://www.twitch.tv/videos/2809204298
 - Title: `ARENA BREAKOUT: INFINITE | w/ Shroud`
 - Process only `01:30:00–02:30:00`.
 - Independent weak control at `01:52:18`: `"DO I HAVE TO BELIEVE IN MYSELF?"`, 10,286 views. The 25-second clip asks the wizard questions but has no payoff; do not treat it as positive truth.
-- Provisional positive at `02:13:04`: `The Tale of the Tortoise and the Hare w/ Shroud`, 2,490 views. The 59-second clip has a full premise, escalation and final `I'm the fucking tortoise` payoff.
+- Accepted positive at `02:13:04`: `The Tale of the Tortoise and the Hare w/ Shroud`, 2,490 views. Justin approved it on 2026-07-14 as a moment he would be happy for the finder to consistently surface. The 59-second clip has a full premise, escalation and final `I'm the fucking tortoise` payoff.
 - A second clip at `01:52:18` is a duplicate anchor and is excluded.
 
-This hour has independently source-aligned crowd evidence plus a same-VOD weak control. Justin must approve the provisional positive before credits are spent. It is sufficient for an exploratory retrieval/boundary smoke test, not a full benchmark.
+This hour has one Justin-accepted, independently source-aligned positive plus a same-VOD weak control. It is sufficient for an exploratory retrieval/boundary smoke test, not a full benchmark.
 
 ### Prompt 1 — humour/social
 
@@ -76,7 +76,7 @@ Use one ClipAnything project and reprompt the completed source. Opus documents r
 
 ## Current status
 
-**READY FOR JUSTIN ANCHOR APPROVAL; THEN BLOCKED ON OPUS SIGN-IN/COMPUTER SESSION.** The valid 60-minute source range and exact Twitch offsets are now recorded. Hermes computer-use diagnostics pass, but the current desktop tool session returns an empty `0×0` capture, so no UI benchmark has been claimed. Justin must approve the provisional positive and authenticate Opus; no API integration or paid credits should be created speculatively.
+**SOURCE RANGE APPROVED; BLOCKED ON OPUS SIGN-IN/COMPUTER SESSION.** Justin approved the positive anchor on 2026-07-14. The valid 60-minute source range and exact Twitch offsets are recorded. Hermes computer-use diagnostics pass, but the current desktop tool session returns an empty `0×0` capture, so no UI benchmark has been claimed. Justin must authenticate Opus after the computer session reconnects; no API integration or paid credits should be created speculatively.
 
 ## Primary sources
 
