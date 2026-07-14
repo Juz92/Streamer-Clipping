@@ -36,11 +36,16 @@ import { computeAutoTrim } from "./lib/enhanced-auto-trim.js";
 import { finalizeClip, remapWhisperForFinalized } from "./lib/trim-finalize.js";
 import { diarizeClip, isPyannoteAvailable, type SpeakerTurn } from "./lib/diarize.js";
 import { loadFeedback, getDurationSweetSpot } from "./lib/feedback.js";
+import {
+  canonicalizeMoment,
+  chooseCanonicalMomentSource,
+} from "./lib/candidate-contract.js";
 
 const log = createLogger("trim");
 
 interface ClipMeta {
   rank: number;
+  candidateId: string;
   momentId?: string;
   sourceStartSec?: number;
   sourceEndSec?: number;
@@ -93,6 +98,7 @@ async function main() {
   }
 
   const manifest = loadManifest(streamId);
+  const jobId = basename(manifest.jobDir);
   const rawClipsDir = join(streamDir, "raw-clips");
   const unifiedPath = join(streamDir, "unified-moments.json");
   const nlmPath = join(streamDir, "notebooklm-moments.json");
@@ -156,6 +162,7 @@ async function main() {
 
     for (let i = 0; i < nlmMoments.length; i++) {
       const m = nlmMoments[i];
+      const identity = canonicalizeMoment(jobId, m);
       const rank = i + 1;
       const slug = (m.hook || m.description || `clip-${rank}`)
         .replace(/[^a-zA-Z0-9 ]/g, "")
@@ -194,7 +201,8 @@ async function main() {
 
       clips.push({
         rank,
-        momentId: m.id,
+        candidateId: identity.candidateId,
+        momentId: identity.momentId,
         sourceStartSec: m.startSec,
         sourceEndSec: m.endSec,
         clipFile: fileName,
@@ -223,6 +231,9 @@ async function main() {
     }
 
     let moments: Array<{
+      id?: string;
+      momentId?: string;
+      candidateId?: string;
       description?: string;
       hookText?: string;
       viralityScore?: number;
@@ -249,8 +260,13 @@ async function main() {
       const rankMatch = file.match(/^(\d+)-/);
       const rank = rankMatch ? parseInt(rankMatch[1], 10) : 0;
       const moment = rank > 0 && rank <= moments.length ? moments[rank - 1] : null;
+      const identity = canonicalizeMoment(jobId, moment ?? {
+        id: `manual-${file.replace(/\.mp4$/i, "")}`,
+      });
       return {
         rank,
+        candidateId: identity.candidateId,
+        momentId: identity.momentId,
         clipFile: file,
         description: moment?.description || file.replace(/^\d+-/, "").replace(/\.mp4$/, "").replace(/-/g, " "),
         hookText: moment?.hookText || "",
@@ -283,6 +299,7 @@ async function main() {
     channelConfig,
     clips: clips.map((c) => ({
       rank: c.rank,
+      candidateId: c.candidateId,
       momentId: c.momentId,
       sourceStartSec: c.sourceStartSec,
       sourceEndSec: c.sourceEndSec,
@@ -412,6 +429,7 @@ async function main() {
                 totalClips: trimData.length,
                 approved: approved.map((t) => ({
                   rank: t.rank,
+                  candidateId: clips.find((clip) => clip.rank === t.rank)?.candidateId,
                   momentId: clips.find((clip) => clip.rank === t.rank)?.momentId,
                   sourceStartSec: clips.find((clip) => clip.rank === t.rank)?.sourceStartSec,
                   sourceEndSec: clips.find((clip) => clip.rank === t.rank)?.sourceEndSec,
@@ -428,6 +446,8 @@ async function main() {
                 })),
                 rejected: rejected.map((t) => ({
                   rank: t.rank,
+                  candidateId: clips.find((clip) => clip.rank === t.rank)?.candidateId,
+                  momentId: clips.find((clip) => clip.rank === t.rank)?.momentId,
                   clipFile: t.clipFile,
                   reason: "User rejected",
                   comment: t.comment || null,
@@ -562,9 +582,36 @@ async function main() {
 //  Auto-trim path — no browser, uses whisper + audio peaks to finalize every clip
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface AutoMomentInput {
+  id?: string;
+  momentId?: string;
+  candidateId?: string;
+  contentLane?: string;
+  laneScore?: number;
+  rank?: number;
+  startSec?: number;
+  endSec?: number;
+  suggestedStartSec?: number;
+  suggestedEndSec?: number;
+  description?: string;
+  hookText?: string;
+  hook?: string;
+  viralScore?: number;
+  viralityScore?: number;
+  signalOverlap?: number;
+  scores?: { viralityScore?: number; composite?: number };
+  archetype?: string;
+  categories?: string[];
+  flashSec?: number;
+  coldOpenSec?: number;
+  naturalEndSec?: number;
+  visualType?: string;
+}
+
 interface AutoMoment {
   rank: number;
-  momentId?: string;
+  candidateId: string;
+  momentId: string;
   slug: string;
   paddedFile: string;
   streamStartSec: number;
@@ -711,39 +758,52 @@ function applyPickQuality(moment: AutoMoment, quality?: PickQualityEntry): AutoM
   };
 }
 
-function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): AutoMoment[] {
+function loadAutoMoments(
+  streamDir: string,
+  manifest: { videoPath: string; jobDir: string },
+): AutoMoment[] {
   const nlmPath = join(streamDir, "notebooklm-moments.json");
   const unifiedPath = join(streamDir, "unified-moments.json");
   const momentsPath = join(streamDir, "moments.json");
   const qualityByRank = loadPickQuality(streamDir);
+  const notebookMoments = existsSync(nlmPath)
+    ? JSON.parse(readFileSync(nlmPath, "utf-8")) as AutoMomentInput[]
+    : [];
+  const unifiedMoments = existsSync(unifiedPath)
+    ? JSON.parse(readFileSync(unifiedPath, "utf-8")) as AutoMomentInput[]
+    : [];
+  const scorerMoments = existsSync(momentsPath)
+    ? JSON.parse(readFileSync(momentsPath, "utf-8")) as AutoMomentInput[]
+    : [];
+  const selectedMoments = chooseCanonicalMomentSource(
+    notebookMoments,
+    unifiedMoments,
+    scorerMoments,
+  );
+  const jobId = basename(manifest.jobDir);
 
-  if (existsSync(nlmPath)) {
-    const nlm: Array<{
-      id?: string;
-      startSec: number;
-      endSec: number;
-      hook?: string;
-      description?: string;
-      viralScore?: number;
-      archetype?: string;
-      categories?: string[];
-      flashSec?: number;
-      coldOpenSec?: number;
-      naturalEndSec?: number;
-      visualType?: string;
-    }> = JSON.parse(readFileSync(nlmPath, "utf-8"));
+  if (selectedMoments === notebookMoments) {
+    const nlm = notebookMoments;
     if (nlm.length > 0) {
       return nlm.map((m, i) => {
+        const identity = canonicalizeMoment(jobId, m);
         const rank = i + 1;
+        const startSec = m.coldOpenSec ?? m.startSec;
+        const endSec = m.naturalEndSec ?? m.endSec;
+        if (!isFiniteSec(startSec) || !isFiniteSec(endSec) || endSec <= startSec) {
+          throw new Error(`Candidate ${identity.candidateId} has no valid source window`);
+        }
         const slug = slugifyForFile(m.hook || m.description || `clip-${rank}`);
         const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
         const targets = getTrimTargets(archetype);
         return applyPickQuality({
           rank,
+          candidateId: identity.candidateId,
+          momentId: identity.momentId,
           slug,
           paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
-          streamStartSec: m.coldOpenSec ?? m.startSec,
-          streamEndSec: m.naturalEndSec ?? m.endSec,
+          streamStartSec: startSec,
+          streamEndSec: endSec,
           hookText: m.hook || "",
           description: m.description || m.hook || `Clip ${rank}`,
           viralityScore: m.viralScore ?? 0,
@@ -759,32 +819,28 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
     }
   }
 
-  if (existsSync(unifiedPath)) {
-    const unified: Array<{
-      id?: string;
-      startSec: number;
-      endSec: number;
-      description?: string;
-      hookText?: string;
-      viralityScore?: number;
-      archetype?: string;
-      categories?: string[];
-      flashSec?: number;
-      coldOpenSec?: number;
-      naturalEndSec?: number;
-    }> = JSON.parse(readFileSync(unifiedPath, "utf-8"));
+  if (selectedMoments === unifiedMoments) {
+    const unified = unifiedMoments;
     if (unified.length > 0) {
       return unified.map((m, i) => {
+        const identity = canonicalizeMoment(jobId, m);
         const rank = i + 1;
+        const startSec = m.coldOpenSec ?? m.startSec;
+        const endSec = m.naturalEndSec ?? m.endSec;
+        if (!isFiniteSec(startSec) || !isFiniteSec(endSec) || endSec <= startSec) {
+          throw new Error(`Candidate ${identity.candidateId} has no valid source window`);
+        }
         const slug = slugifyForFile(m.hookText || m.description || `clip-${rank}`);
         const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
         const targets = getTrimTargets(archetype);
         return applyPickQuality({
           rank,
+          candidateId: identity.candidateId,
+          momentId: identity.momentId,
           slug,
           paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
-          streamStartSec: m.coldOpenSec ?? m.startSec,
-          streamEndSec: m.naturalEndSec ?? m.endSec,
+          streamStartSec: startSec,
+          streamEndSec: endSec,
           hookText: m.hookText || "",
           description: m.description || `Clip ${rank}`,
           viralityScore: m.viralityScore ?? 0,
@@ -799,26 +855,10 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
     }
   }
 
-  if (existsSync(momentsPath)) {
-    const scorer: Array<{
-      id?: string;
-      suggestedStartSec?: number;
-      suggestedEndSec?: number;
-      startSec?: number;
-      endSec?: number;
-      description?: string;
-      hookText?: string;
-      hook?: string;
-      signalOverlap?: number;
-      scores?: { viralityScore?: number; composite?: number };
-      archetype?: string;
-      categories?: string[];
-      flashSec?: number;
-      coldOpenSec?: number;
-      naturalEndSec?: number;
-      visualType?: string;
-    }> = JSON.parse(readFileSync(momentsPath, "utf-8"));
+  if (selectedMoments === scorerMoments) {
+    const scorer = scorerMoments;
     return scorer.map((m, i) => {
+      const identity = canonicalizeMoment(jobId, m);
       const rank = i + 1;
       const startSec = m.coldOpenSec ?? m.startSec ?? m.suggestedStartSec ?? 0;
       const endSec = m.naturalEndSec ?? m.endSec ?? m.suggestedEndSec ?? startSec + 30;
@@ -828,6 +868,8 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
       const targets = getTrimTargets(archetype);
       return applyPickQuality({
         rank,
+        candidateId: identity.candidateId,
+        momentId: identity.momentId,
         slug,
         paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
         streamStartSec: startSec,
@@ -945,7 +987,8 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
 
   const approved: Array<{
     rank: number;
-    momentId?: string;
+    candidateId: string;
+    momentId: string;
     sourceStartSec: number;
     sourceEndSec: number;
     clipFile: string;
@@ -1104,6 +1147,7 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
 
     approved.push({
       rank: m.rank,
+      candidateId: m.candidateId,
       momentId: m.momentId,
       sourceStartSec: m.streamStartSec,
       sourceEndSec: m.streamEndSec,

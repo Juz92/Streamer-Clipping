@@ -40,6 +40,7 @@ const GAMING_CATEGORY_ID = "20";
 
 interface ClipMeta {
   clipNum: number;
+  candidateId?: string;
   momentId?: string;
   slug: string;
   ytTitle: string;
@@ -507,6 +508,8 @@ function generateManualPackage(
     let metaContent: string;
     if (platform === "youtube") {
       metaContent = [
+        `CANDIDATE_ID: ${meta.candidateId}`,
+        "",
         `TITLE: ${meta.ytTitle}`,
         "",
         "DESCRIPTION:",
@@ -518,14 +521,15 @@ function generateManualPackage(
         "VISIBILITY: Private (set to Public when ready)",
       ].join("\n");
     } else if (platform === "tiktok") {
-      metaContent = `CAPTION:\n${meta.tiktokCaption}`;
+      metaContent = `CANDIDATE_ID: ${meta.candidateId}\n\nCAPTION:\n${meta.tiktokCaption}`;
     } else {
-      metaContent = `CAPTION:\n${meta.reelsCaption}`;
+      metaContent = `CANDIDATE_ID: ${meta.candidateId}\n\nCAPTION:\n${meta.reelsCaption}`;
     }
 
     writeFileSync(join(distDir, metaName), metaContent, "utf-8");
 
     instructions.push(`### Clip ${meta.clipNum}: ${meta.slug}`);
+    instructions.push(`- Candidate: \`${meta.candidateId}\``);
     instructions.push(`- Video: \`${vidName}\``);
     instructions.push(`- Metadata: \`${metaName}\``);
     if (platform === "youtube") {
@@ -596,10 +600,12 @@ async function main(): Promise<void> {
   const trimResultsPath = join(jobDir, "trim-results.json");
   if (existsSync(trimResultsPath)) {
     const trimResults = JSON.parse(readFileSync(trimResultsPath, "utf-8")) as {
-      approved?: Array<{ rank: number; momentId?: string }>;
+      approved?: Array<{ rank: number; candidateId?: string; momentId?: string }>;
     };
     for (const clip of allClips) {
-      clip.momentId = trimResults.approved?.find((item) => item.rank === clip.clipNum)?.momentId;
+      const source = trimResults.approved?.find((item) => item.rank === clip.clipNum);
+      clip.candidateId = source?.candidateId;
+      clip.momentId = source?.momentId;
     }
   }
   const clipsToUpload = args.all
@@ -609,6 +615,12 @@ async function main(): Promise<void> {
   if (clipsToUpload.length === 0) {
     log.error("No clips match the specified filter.");
     process.exit(1);
+  }
+  const missingIdentity = clipsToUpload.filter((clip) => !clip.candidateId);
+  if (missingIdentity.length > 0) {
+    throw new Error(
+      `Distribution blocked: clip(s) ${missingIdentity.map((clip) => clip.clipNum).join(", ")} have no candidateId`,
+    );
   }
 
   // Verify all video files exist before starting uploads
@@ -653,6 +665,7 @@ async function main(): Promise<void> {
   // Track all upload results across platforms
   const allResults: Array<{
     clipNum: number;
+    candidateId: string;
     platform: Platform;
     id: string;
     url: string;
@@ -680,13 +693,12 @@ async function main(): Promise<void> {
         const youtube = google.youtube({ version: "v3", auth: oauth2 });
         for (const { meta, videoPath } of uploadPlan) {
           try {
-            if (!meta.momentId) {
-              throw new Error(`Clip ${meta.clipNum} has no source moment in trim-results.json`);
+            if (!meta.candidateId) {
+              throw new Error(`Clip ${meta.clipNum} has no candidateId in trim-results.json`);
             }
             const poolPath = join(DATA_DIR, "clips", "candidate-pool.json");
-            const jobId = basename(jobDir);
             const sourceMatches = loadPool(poolPath).candidates.filter(
-              (candidate) => candidate.jobId === jobId && candidate.momentId === meta.momentId,
+              (candidate) => candidate.candidateId === meta.candidateId,
             );
             if (sourceMatches.length !== 1 || sourceMatches[0].startSec == null || sourceMatches[0].endSec == null) {
               throw new Error(`Clip ${meta.clipNum} has no unique source-VOD window`);
@@ -695,13 +707,12 @@ async function main(): Promise<void> {
             const videoId = await uploadToYouTube(youtube, videoPath, meta);
             const uploadedAt = new Date().toISOString();
             recordYoutubePublication(poolPath, {
-              jobId,
-              momentId: meta.momentId,
+              candidateId: meta.candidateId,
               videoId,
               postedAt: uploadedAt,
             });
             allResults.push({
-              clipNum: meta.clipNum, platform: "youtube", id: videoId,
+              clipNum: meta.clipNum, candidateId: meta.candidateId, platform: "youtube", id: videoId,
               url: `https://youtube.com/shorts/${videoId}`, method: "api",
               uploadedAt, privacyStatus: "private",
             });
@@ -714,7 +725,7 @@ async function main(): Promise<void> {
           try {
             const publishId = await uploadToTikTok(videoPath, meta);
             allResults.push({
-              clipNum: meta.clipNum, platform: "tiktok", id: publishId,
+              clipNum: meta.clipNum, candidateId: meta.candidateId!, platform: "tiktok", id: publishId,
               url: `https://tiktok.com/@daily.peanut.clip`, method: "api",
               uploadedAt: new Date().toISOString(), privacyStatus: "self_only",
             });
@@ -727,7 +738,7 @@ async function main(): Promise<void> {
           try {
             const mediaId = await uploadToInstagram(videoPath, meta);
             allResults.push({
-              clipNum: meta.clipNum, platform: "instagram", id: mediaId,
+              clipNum: meta.clipNum, candidateId: meta.candidateId!, platform: "instagram", id: mediaId,
               url: `https://instagram.com/dailypeanutclipsandhighlights/`, method: "api",
               uploadedAt: new Date().toISOString(), privacyStatus: "published",
             });
@@ -744,7 +755,7 @@ async function main(): Promise<void> {
       generateManualPackage(platform, jobDir, uploadPlan);
       for (const { meta } of uploadPlan) {
         allResults.push({
-          clipNum: meta.clipNum, platform, id: "manual",
+          clipNum: meta.clipNum, candidateId: meta.candidateId!, platform, id: "manual",
           url: join(jobDir, "distribute", platform), method: "manual_package",
           uploadedAt: new Date().toISOString(), privacyStatus: "pending_manual_upload",
         });

@@ -6,10 +6,12 @@ import {
   mkdirSync,
 } from "fs";
 import { dirname } from "path";
+import {
+  canonicalizeMoment,
+  type CandidateIdentity,
+} from "./candidate-contract.js";
 
-export interface CandidatePointer {
-  jobId: string;
-  momentId: string;
+export interface CandidatePointer extends CandidateIdentity {
   streamId: string;
   streamDate: string;
   categories: string[];
@@ -81,6 +83,9 @@ export function loadPool(path: string): CandidatePool {
       `Unsupported candidate pool version: ${parsed.version} (expected 1)`,
     );
   }
+  parsed.candidates = parsed.candidates.map((candidate) =>
+    canonicalizeMoment(candidate.jobId, candidate),
+  );
   return parsed;
 }
 
@@ -90,6 +95,13 @@ export function loadPool(path: string): CandidatePool {
  */
 export function savePool(path: string, pool: CandidatePool): void {
   mkdirSync(dirname(path), { recursive: true });
+  pool.candidates = pool.candidates.map((candidate) =>
+    canonicalizeMoment(candidate.jobId, candidate),
+  );
+  const ids = new Set(pool.candidates.map((candidate) => candidate.candidateId));
+  if (ids.size !== pool.candidates.length) {
+    throw new Error("Candidate pool contains duplicate candidateId values");
+  }
   pool.updatedAt = new Date().toISOString();
   const tmpPath = `${path}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(pool, null, 2), "utf-8");
@@ -110,22 +122,21 @@ export function appendCandidates(
 }
 
 export interface YoutubeCandidateLink {
-  jobId: string;
-  momentId: string;
+  candidateId: string;
   videoId: string;
   linkedAt: string;
 }
 
 /**
  * Attach a YouTube video ID to one exact source candidate.
- * Moment IDs repeat between jobs, so matching by moment ID alone is unsafe.
+ * candidateId is the immutable job-scoped source identity.
  */
 export function linkYoutubeUpload(
   path: string,
   link: YoutubeCandidateLink,
 ): CandidatePointer {
-  if (!link.jobId || !link.momentId) {
-    throw new Error("YouTube alignment requires both jobId and momentId");
+  if (!link.candidateId) {
+    throw new Error("YouTube alignment requires candidateId");
   }
   if (!/^[A-Za-z0-9_-]{6,}$/.test(link.videoId)) {
     throw new Error(`Invalid YouTube video ID: ${link.videoId}`);
@@ -133,11 +144,11 @@ export function linkYoutubeUpload(
 
   const pool = loadPool(path);
   const matches = pool.candidates.filter(
-    (candidate) => candidate.jobId === link.jobId && candidate.momentId === link.momentId,
+    (candidate) => candidate.candidateId === link.candidateId,
   );
   if (matches.length !== 1) {
     throw new Error(
-      `Expected exactly one candidate for ${link.jobId}:${link.momentId}; found ${matches.length}`,
+      `Expected exactly one candidate for ${link.candidateId}; found ${matches.length}`,
     );
   }
 
@@ -155,15 +166,14 @@ export function recordYoutubePublication(
   publication: Omit<YoutubeCandidateLink, "linkedAt"> & { postedAt: string },
 ): CandidatePointer {
   linkYoutubeUpload(path, {
-    jobId: publication.jobId,
-    momentId: publication.momentId,
+    candidateId: publication.candidateId,
     videoId: publication.videoId,
     linkedAt: publication.postedAt,
   });
 
   const pool = loadPool(path);
   const candidate = pool.candidates.find(
-    (item) => item.jobId === publication.jobId && item.momentId === publication.momentId,
+    (item) => item.candidateId === publication.candidateId,
   )!;
   candidate.status = "posted-daily";
   candidate.postedDate = publication.postedAt.slice(0, 10);

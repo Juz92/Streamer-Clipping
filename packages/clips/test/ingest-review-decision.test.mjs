@@ -7,7 +7,13 @@ test("infers acceptedSuggestedPick and preserves discovery metadata for later ca
     "stream-1",
     {
       chosenRank: 2,
-      decisions: [{ rank: 2, status: "approved", reaction: "lol", rejectionReason: null }],
+      decisions: [{
+        rank: 2,
+        candidateId: "job-001:moment-2",
+        status: "approved",
+        reaction: "lol",
+        rejectionReason: null,
+      }],
     },
     { suggestedRank: 2 },
     [{
@@ -23,6 +29,7 @@ test("infers acceptedSuggestedPick and preserves discovery metadata for later ca
   assert.equal(record.acceptedSuggestedPick, true);
   assert.equal(record.chosenRank, 2);
   assert.equal(record.decisions[0].status, "approved");
+  assert.equal(record.decisions[0].candidateId, "job-001:moment-2");
   assert.equal(record.decisions[0].contentLane, "peanut-bits");
   assert.equal(record.decisions[0].payoffType, "roast");
   assert.equal(record.decisions[0].laneScore, 0.88);

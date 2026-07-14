@@ -38,6 +38,7 @@ import {
 import { scorePick } from "./lib/notebooklm-scorer.js";
 import { loadHeatmap, scoreHeatmapBonus, type HeatPoint } from "./lib/heatmap-extractor.js";
 import { appendCandidates, removeByJobId, type CandidatePointer } from "./lib/candidate-pool.js";
+import { makeCandidateId } from "./lib/candidate-contract.js";
 
 const log = createLogger("gpt55-review");
 const POOL_PATH = join(DATA_DIR, "clips", "candidate-pool.json");
@@ -354,9 +355,11 @@ async function main(): Promise<void> {
   writeFileSync(nlmMomentsPath, JSON.stringify(nlmMoments, null, 2), "utf-8");
   log.info(`Wrote ${nlmMoments.length} picks → ${nlmMomentsPath}`);
 
-  // Step 10: Append to candidate pool
+  // Step 10: Replace this job's pending candidates in the canonical pool.
   const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
+  removeByJobId(POOL_PATH, jobId);
   const pointers: CandidatePointer[] = nlmMoments.map((m) => ({
+    candidateId: makeCandidateId(jobId, m.id),
     jobId,
     momentId: m.id,
     streamId: manifest.streamId,

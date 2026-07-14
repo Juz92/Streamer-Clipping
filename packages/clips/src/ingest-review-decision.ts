@@ -19,6 +19,7 @@ interface ReviewDecision {
   notes?: string;
   decisions?: Array<{
     rank: number;
+    candidateId: string;
     file?: string;
     status?: string;
     reaction?: "lol" | "smiled" | "nothing" | "context-missing" | null;
@@ -118,6 +119,7 @@ export function normalizeReviewRecord(
   }
   for (const item of decisions) {
     if (!Number.isInteger(item.rank)) throw new Error("Every decision item needs an integer rank");
+    if (!item.candidateId) throw new Error("Every decision item needs candidateId");
   }
 
   return {

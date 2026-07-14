@@ -10,6 +10,7 @@ import {
   removeByJobId,
 } from "../src/lib/candidate-pool.js";
 import type { CandidatePointer } from "../src/lib/candidate-pool.js";
+import { makeCandidateId } from "../src/lib/candidate-contract.js";
 
 function makeTmp(): string {
   return mkdtempSync(join(tmpdir(), "peanut-pool-"));
@@ -21,6 +22,7 @@ function mkCandidate(
   score = 80,
 ): CandidatePointer {
   return {
+    candidateId: makeCandidateId(jobId, momentId),
     jobId,
     momentId,
     streamId: `stream-${jobId}`,

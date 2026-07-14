@@ -33,6 +33,7 @@ import {
   removeByJobId,
   type CandidatePointer,
 } from "./lib/candidate-pool.js";
+import { makeCandidateId } from "./lib/candidate-contract.js";
 
 const log = createLogger("notebooklm-review");
 const POOL_PATH = join(DATA_DIR, "clips", "candidate-pool.json");
@@ -423,6 +424,7 @@ async function main(): Promise<void> {
   // Step 10: Append to candidate pool
   const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
   const pointers: CandidatePointer[] = nlmMoments.map((m) => ({
+    candidateId: makeCandidateId(jobId, m.id),
     jobId,
     momentId: m.id,
     streamId: manifest.streamId,

@@ -753,7 +753,7 @@ function pickMeaningful(primary: string | undefined, fallback: string | undefine
 function contextFromCandidate(candidate: any, source: string): CandidateContext {
   const categories = Array.isArray(candidate.categories) ? candidate.categories : [];
   return {
-    candidateId: candidate.candidateId || candidate.id || candidate.momentId,
+    candidateId: candidate.candidateId,
     sourceVodId: candidate.streamId,
     sourceStartSec: candidate.startSec,
     sourceEndSec: candidate.endSec,

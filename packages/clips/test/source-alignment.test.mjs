@@ -49,17 +49,18 @@ test("joins a YouTube publication to one exact source VOD window", () => {
   writeFileSync(poolPath, JSON.stringify(original, null, 2));
   try {
     const linked = recordYoutubePublication(poolPath, {
-      jobId: "job-a",
-      momentId: "nlm-001",
+      candidateId: "job-a:nlm-001",
       videoId: "AbCdEf123_-",
       postedAt: "2026-07-11T12:34:56.000Z",
     });
     const saved = JSON.parse(readFileSync(poolPath, "utf8"));
 
     assert.equal(linked.streamId, "source-vod-a");
+    assert.equal(linked.candidateId, "job-a:nlm-001");
     assert.equal(linked.startSec, 4359);
     assert.equal(linked.endSec, 4423);
     assert.equal(saved.candidates[0].youtubeVideoId, "AbCdEf123_-");
+    assert.equal(saved.candidates[0].candidateId, "job-a:nlm-001");
     assert.equal(saved.candidates[0].youtubeUrl, "https://youtube.com/shorts/AbCdEf123_-");
     assert.equal(saved.candidates[0].status, "posted-daily");
     assert.equal(saved.candidates[0].postedDate, "2026-07-11");

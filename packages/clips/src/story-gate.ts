@@ -13,7 +13,13 @@ import { createLogger } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
 import { hasFirstThreeSecondHook } from "./quality-gates.js";
 import { passesAutomaticDiscoveryFloor } from "./lib/content-lanes.js";
+import {
+  canonicalizeMoment,
+  chooseCanonicalMomentSource,
+  type CandidateIdentity,
+} from "./lib/candidate-contract.js";
 export { hasFirstThreeSecondHook } from "./quality-gates.js";
+export { chooseCanonicalMomentSource as chooseMomentSource } from "./lib/candidate-contract.js";
 
 const log = createLogger("story-gate");
 
@@ -37,6 +43,8 @@ interface AudioSignalLike {
 
 interface MomentLike {
   id?: string;
+  momentId?: string;
+  candidateId?: string;
   rank?: number;
   startSec?: number;
   endSec?: number;
@@ -77,8 +85,12 @@ interface MomentLike {
   };
 }
 
+type CanonicalMoment = MomentLike & CandidateIdentity;
+
 interface TrimEntry {
   rank: number;
+  candidateId: string;
+  momentId?: string;
   clipFile: string;
   flashDuration?: number;
   contentDuration?: number;
@@ -104,6 +116,7 @@ interface SignalMetrics {
 
 interface GateResult {
   rank: number;
+  candidateId: string;
   momentId: string;
   status: GateStatus;
   score: number;
@@ -127,32 +140,20 @@ function parseArgs(): { streamId?: string; minScore: number; warnOnly: boolean; 
   return out;
 }
 
-export function chooseMomentSource(
-  notebookMoments: MomentLike[],
-  unifiedMoments: MomentLike[],
-  scorerMoments: MomentLike[],
-): MomentLike[] {
-  const hasLaneMetadata = scorerMoments.some((moment) =>
-    typeof moment.contentLane === "string" && typeof moment.laneScore === "number"
-  );
-  if (hasLaneMetadata) return scorerMoments;
-  if (notebookMoments.length > 0) return notebookMoments;
-  if (unifiedMoments.length > 0) return unifiedMoments;
-  return scorerMoments;
-}
-
 function loadMomentArray(path: string): MomentLike[] {
   if (!existsSync(path)) return [];
   const parsed = JSON.parse(readFileSync(path, "utf-8"));
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function loadMoments(streamDir: string): MomentLike[] {
+function loadMoments(streamDir: string, jobId: string): CanonicalMoment[] {
   const notebookMoments = loadMomentArray(join(streamDir, "notebooklm-moments.json"));
   const unifiedMoments = loadMomentArray(join(streamDir, "unified-moments.json"));
   const scorerMoments = loadMomentArray(join(streamDir, "moments.json"));
-  const selected = chooseMomentSource(notebookMoments, unifiedMoments, scorerMoments);
-  if (selected.length > 0) return selected;
+  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments);
+  if (selected.length > 0) {
+    return selected.map((moment) => canonicalizeMoment(jobId, moment));
+  }
   throw new Error("No notebooklm-moments.json, unified-moments.json, or moments.json found");
 }
 
@@ -162,11 +163,16 @@ function loadSignalMoments(streamDir: string): MomentLike[] {
   return JSON.parse(readFileSync(path, "utf-8"));
 }
 
-function loadTrimEntries(streamDir: string): TrimEntry[] {
+function loadTrimEntries(streamDir: string, jobId: string): TrimEntry[] {
   const trimPath = join(streamDir, "trim-results.json");
   if (!existsSync(trimPath)) return [];
   const trim = JSON.parse(readFileSync(trimPath, "utf-8")) as { approved?: TrimEntry[] };
-  return trim.approved ?? [];
+  return (trim.approved ?? []).map((entry) => {
+    if (!entry.momentId) {
+      throw new Error(`Trim rank ${entry.rank} has no momentId; rerun trim before Story Gate`);
+    }
+    return { ...entry, ...canonicalizeMoment(jobId, entry) };
+  });
 }
 
 function parseTimecodeSeconds(timecode: string): number | undefined {
@@ -393,7 +399,7 @@ function calculateSignalMetrics(
 }
 
 function scoreMoment(
-  moment: MomentLike,
+  moment: CanonicalMoment,
   rank: number,
   trim?: TrimEntry,
   signalMoment?: MomentLike,
@@ -552,7 +558,8 @@ function scoreMoment(
 
   return {
     rank,
-    momentId: moment.id ?? `moment-${rank}`,
+    candidateId: moment.candidateId,
+    momentId: moment.momentId,
     status,
     score,
     reasons,
@@ -574,9 +581,10 @@ function main(): void {
     process.exit(1);
   }
   const manifest = loadManifest(args.streamId);
-  const moments = loadMoments(streamDir);
+  const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
+  const moments = loadMoments(streamDir, jobId);
   const signalMoments = loadSignalMoments(streamDir);
-  const trims = loadTrimEntries(streamDir);
+  const trims = loadTrimEntries(streamDir, jobId);
 
   const selected = moments
     .map((m, i) => ({ moment: m, rank: i + 1 }))
@@ -590,7 +598,7 @@ function main(): void {
   const results = selected.map(({ moment, rank }) => scoreMoment(
     moment,
     rank,
-    trims.find((t) => t.rank === rank),
+    trims.find((t) => t.candidateId === moment.candidateId),
     findSignalMoment(moment, signalMoments),
   ));
 

@@ -17,6 +17,7 @@ import {
   removeByJobId,
   type CandidatePointer,
 } from "./lib/candidate-pool.js";
+import { makeCandidateId } from "./lib/candidate-contract.js";
 import { QUERY_ENRICHMENT_TIMESTAMPS, QUERY_ENRICHMENT_RUBRIC } from "./lib/notebooklm-queries.js";
 import { UNIFIED_SYSTEM_PROMPT, TRANSCRIPT_RECALL_ANALYSIS, windowTimestampedTranscript } from "./lib/gpt55-queries.js";
 
@@ -342,6 +343,7 @@ async function main() {
   // Step 7: Append to candidate pool
   const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
   const pointers: CandidatePointer[] = nlmMoments.map((m) => ({
+    candidateId: makeCandidateId(jobId, m.id),
     jobId, momentId: m.id, streamId: manifest.streamId, streamDate: manifest.uploadDate,
     categories: m.categories, viralScore: m.viralScore,
     startSec: m.startSec, endSec: m.endSec, durationSec: m.durationSec,

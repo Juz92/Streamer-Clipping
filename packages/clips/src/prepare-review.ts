@@ -23,6 +23,8 @@ interface PickQuality {
 
 interface TrimEntry {
   rank: number;
+  candidateId: string;
+  momentId: string;
   clipFile: string;
   totalDuration?: number;
   notes?: string;
@@ -30,6 +32,7 @@ interface TrimEntry {
 
 export interface ReviewClip {
   rank: number;
+  candidateId: string;
   file: string;
   title: string;
   thumb: string | null;
@@ -122,6 +125,7 @@ export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], sug
       },
       decisions: clips.map((clip) => ({
         rank: clip.rank,
+        candidateId: clip.candidateId,
         file: clip.file,
         status: "pending",
         reaction: null,
@@ -273,6 +277,10 @@ async function main(): Promise<void> {
   const clips: ReviewClip[] = [];
   for (const file of shortFiles) {
     const rank = rankFromFile(file);
+    const trim = trimByRank.get(rank);
+    if (!trim?.candidateId) {
+      throw new Error(`Rendered clip ${rank} has no candidateId in trim-results.json`);
+    }
     const padded = String(rank).padStart(2, "0");
     copyFileSync(join(shortsDir, file), join(reviewShortsDir, file));
 
@@ -284,11 +292,12 @@ async function main(): Promise<void> {
 
     clips.push({
       rank,
+      candidateId: trim.candidateId,
       file,
       title: titles.get(rank) ?? file.replace(/^\d{2}-/, "").replace(/\.mp4$/i, ""),
       thumb: copiedYt ? `thumbnails/${ytThumb}` : null,
       quality: qualityByRank.get(rank),
-      trim: trimByRank.get(rank),
+      trim,
     });
   }
 
