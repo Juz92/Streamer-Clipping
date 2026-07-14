@@ -2,9 +2,9 @@
 
 ## Verdict
 
-**Yes, OpusClip explicitly does this.** Its official ClipAnything documentation includes a `Gamer` example, says it analyzes visual/audio/sentiment cues even with little dialogue, supports Twitch/Kick/YouTube/live-stream sources, accepts prompt-guided searches such as “Compile all the hilarious moments,” and processes videos up to 10 hours.
+**NO-GO for Streamer-Clipping comedy discovery.** OpusClip has the advertised feature fit, but the completed one-hour smoke test failed the agreed retrieval gate: it generated 39 clips yet did not retrieve the Justin-approved tortoise-and-hare positive at any rank. Exact project search for `tortoise hare` returned `No results`.
 
-That proves feature fit, not quality. A one-hour smoke test is worth running. A fair full-VOD comparison is **not** available for free: the chosen 7h 7m source would require about 427 credits, beyond the 90-credit new-user trial, the 60-minute Free allowance, and a single 300-credit Pro monthly pack. Do not build an Opus integration or buy credits until the smoke test earns it.
+The weak `believe in myself` control was also absent and was not promoted, but avoiding one negative does not compensate for missing the only accepted positive. Do not build an Opus integration, buy credits, or run a full-VOD benchmark from this result.
 
 ## Official capability evidence
 
@@ -74,9 +74,28 @@ Use one ClipAnything project and reprompt the completed source. Opus documents r
 - **Earn a full benchmark:** Opus clearly adds accepted moments or better boundaries; only then consider enough credits for a complete VOD.
 - **Do not choose Buy from the smoke test alone:** a fixed 60-minute segment cannot prove long-VOD recall.
 
+## Smoke-test result — completed 2026-07-14
+
+- Source uploaded: `v2809204298-01h30-02h30.mp4` (60 minutes).
+- Credits consumed: 60; account balance moved from 90 to 30.
+- Generic humour prompt used: complete spontaneous gaming arcs with setup, escalation, payoff and aftermath; routine chatter, low-energy anecdotes and isolated one-liners excluded.
+- Opus generated 39 candidates. Automatic text hooks were disabled before review.
+
+| Rank | Opus score | Source range within test hour | Opus title | Review |
+|---:|---:|---|---|---|
+| 1 | 99 | `32:47–33:15` | `I Came Here To Win: Proving Doubters Wrong!` | Squad boast; not the accepted anchor. |
+| 2 | 98 | `56:34–57:04` | `We Lost $30M in 2 Hours: Record Setters!` | Banter about losing money; not the anchor. |
+| 3 | 97 | `08:56–08:57` + `09:14–09:48` | `Terrifying Moments: Intense Gaming Climax!` | Disjoint stitched scene with a 17-second gap; boundary-quality fail. |
+| 4 | 97 | `25:05–25:06` + `25:10–25:33` + `25:42–25:45` | `Wizard Reveals Secret: 100K Speckled Deuce!` | Two artificial gaps; boundary-quality fail. |
+| 5 | 96 | `47:55–48:11` | `Tord's Unexpected Fail: A Certified Klipperuski Moment!` | Short reaction/label, not the accepted anchor. |
+
+The accepted positive should begin around `43:04` within the uploaded hour (original VOD `02:13:04`). None of the top five overlap it. Searching all generated results for `tortoise hare` returned `No results`, proving the positive was not generated at a lower rank either. Searching `believe in myself` also returned `No results`, so the weak control was omitted rather than promoted.
+
+**Decision:** stop Opus testing. The smoke test did not earn a paid/full-VOD benchmark and exposed stitched-boundary behaviour in two of the top four candidates.
+
 ## Current status
 
-**SOURCE RANGE APPROVED; BLOCKED ON OPUS SIGN-IN/COMPUTER SESSION.** Justin approved the positive anchor on 2026-07-14. The valid 60-minute source range and exact Twitch offsets are recorded. Hermes computer-use diagnostics pass, but the current desktop tool session returns an empty `0×0` capture, so no UI benchmark has been claimed. Justin must authenticate Opus after the computer session reconnects; no API integration or paid credits should be created speculatively.
+**COMPLETE — NO-GO.** The 60-minute OpusClip smoke test was run and inspected on 2026-07-14. It consumed 60 credits, produced 39 clips, missed the accepted positive at every rank, omitted the weak control, and failed the agreed retrieval gate. No Opus integration, paid credits, or full-VOD benchmark should follow.
 
 ## Primary sources
 
