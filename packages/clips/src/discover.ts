@@ -10,8 +10,8 @@ import { extractHeatmap, saveHeatmap, loadHeatmap, type HeatPoint } from "./lib/
 const log = createLogger("discover");
 
 const DEFAULT_CHANNEL = "https://www.youtube.com/@TheBurntPeanut";
-const YT_DLP = process.env.YT_DLP_CMD ?? "python -m yt_dlp";
-const YT_DLP_FORMAT = process.env.YT_DLP_FORMAT ?? "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/best[height<=1080]";
+const YT_DLP = process.env.YT_DLP_CMD?.trim() || "python -m yt_dlp";
+const YT_DLP_FORMAT = process.env.YT_DLP_FORMAT?.trim() || "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/best[height<=1080]";
 
 const args = process.argv.slice(2);
 const listMode = args.indexOf("--list") !== -1;

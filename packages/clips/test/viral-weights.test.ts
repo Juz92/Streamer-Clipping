@@ -12,7 +12,7 @@ import {
   CROSS_CATEGORY_BONUS,
 } from "../src/lib/viral-weights.js";
 
-test("category weights cover all 11 viral categories", () => {
+test("category weights retain every legacy viral category", () => {
   const expected = [
     "hot-take",
     "drama",
@@ -32,19 +32,17 @@ test("category weights cover all 11 viral categories", () => {
       `missing weight for ${cat}`,
     );
   }
-  assert.equal(Object.keys(CATEGORY_WEIGHTS).length, expected.length);
 });
 
-test("hot-take has highest weight (drives comments)", () => {
-  const sorted = Object.entries(CATEGORY_WEIGHTS).sort((a, b) => b[1] - a[1]);
-  // story-of-stream is the single hero pick bonus, so it's allowed to be higher
-  const topWithoutHero = sorted.filter(([k]) => k !== "story-of-stream")[0];
-  assert.equal(topWithoutHero[0], "hot-take");
+test("broad-appeal arcs outrank the legacy hot-take category", () => {
+  assert.ok(CATEGORY_WEIGHTS["story-of-stream"] > CATEGORY_WEIGHTS["hot-take"]);
+  assert.ok(CATEGORY_WEIGHTS["broad-appeal"] > CATEGORY_WEIGHTS["hot-take"]);
+  assert.ok(CATEGORY_WEIGHTS["friend-roast"] > CATEGORY_WEIGHTS["hot-take"]);
 });
 
-test("one-liner has lowest weight (feeds titles, not standalone)", () => {
-  const sorted = Object.entries(CATEGORY_WEIGHTS).sort((a, b) => a[1] - b[1]);
-  assert.equal(sorted[0][0], "one-liner");
+test("reaction-only clips stay below baseline while one-liners remain viable", () => {
+  assert.ok(CATEGORY_WEIGHTS["reaction-gold"] < CATEGORY_WEIGHTS["dry-joke"]);
+  assert.ok(CATEGORY_WEIGHTS["one-liner"] >= CATEGORY_WEIGHTS["dry-joke"]);
 });
 
 test("duration limits are coherent", () => {

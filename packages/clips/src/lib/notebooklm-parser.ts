@@ -531,7 +531,7 @@ export function parseEnrichmentQuery(
   // Try batch first, fallback to single.
 
   const batchBlocks = answer.split(
-    /\n(?=\*\*Candidate\s+\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/,
+    /\n(?=\*\*(?:Candidate\s+)?\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/,
   );
 
   for (const block of batchBlocks) {

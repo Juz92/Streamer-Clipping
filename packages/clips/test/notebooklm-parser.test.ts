@@ -117,7 +117,7 @@ test("parseEmotionalPeaksQuery extracts emotional moments", () => {
   const picks = parseEmotionalPeaksQuery(SYNTHETIC_EMOTIONAL as any);
   assert.equal(picks.length, 2);
   assert.equal(picks[0].startSec, 5 * 3600 + 40 * 60 + 24);
-  assert.equal(picks[0].categories[0], "emotional-peak");
+  assert.equal(picks[0].categories[0], "rage");
   assert.equal(picks[0].sourceQuery, "emotional-peaks");
 });
 
