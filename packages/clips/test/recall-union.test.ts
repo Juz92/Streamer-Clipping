@@ -4,11 +4,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  buildRecallUnion,
   makeSemanticRecallMomentId,
   mergeRecallAnchors,
   persistRecallUnion,
   resolveRecallUnionCandidate,
 } from "../src/lib/recall-union.js";
+import { loadRecallCandidates } from "../src/ground-candidates.js";
 import { loadPool, savePool } from "../src/lib/candidate-pool.js";
 
 function semanticAnchor(index: number) {
@@ -145,6 +147,60 @@ test("persistence keeps the uncapped union in the artifact and candidate pool", 
     assert.equal(artifact.length, 21);
     assert.equal(pool.candidates.length, 21);
     assert.ok(pool.candidates.every((candidate) => candidate.recallRoutes?.length));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("scorer payoff nomination survives in recall categories and route provenance", () => {
+  const [candidate] = buildRecallUnion("job-wow", [], [{
+    id: "moment-wow",
+    suggestedStartSec: 100,
+    suggestedEndSec: 140,
+    description: "A visually impressive connected play",
+    contentLane: "peanut-plays",
+    payoffType: "wow",
+    laneScore: 0.9,
+  }]);
+
+  assert.deepEqual(candidate.categories, ["peanut-plays", "wow"]);
+  assert.ok(candidate.recallRoutes.includes("payoff:wow"));
+  assert.ok(candidate.routeEvidence[0].routes.includes("payoff:wow"));
+});
+
+test("grounding refreshes a stale derived union from current recall sources", () => {
+  const root = mkdtempSync(join(tmpdir(), "recall-ground-refresh-"));
+  try {
+    writeFileSync(join(root, "recall-candidates.json"), JSON.stringify([{
+      momentId: "semantic-current",
+      candidateId: "job-refresh:semantic-current",
+      startSec: 100,
+      endSec: 140,
+      hook: "Current semantic candidate",
+      categories: ["peanut-bits"],
+      sourceQuery: "humor",
+    }]));
+    writeFileSync(join(root, "signal-recall.json"), JSON.stringify([{
+      id: "scorer-current",
+      suggestedStartSec: 500,
+      suggestedEndSec: 540,
+      description: "Current gameplay scorer candidate",
+      contentLane: "peanut-plays",
+      payoffType: "wow",
+      laneScore: 0.9,
+    }]));
+    writeFileSync(join(root, "recall-union.json"), JSON.stringify([{
+      ...mergeRecallAnchors("job-refresh", [semanticAnchor(0)])[0],
+      description: "Stale derived candidate",
+    }]));
+
+    const refreshed = loadRecallCandidates(root, "job-refresh");
+    const artifact = JSON.parse(readFileSync(join(root, "recall-union.json"), "utf-8"));
+
+    assert.equal(refreshed.length, 2);
+    assert.equal(artifact.length, 2);
+    assert.ok(refreshed.some((candidate) => candidate.momentId === "scorer-current"));
+    assert.ok(refreshed.some((candidate) => candidate.categories.includes("wow")));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

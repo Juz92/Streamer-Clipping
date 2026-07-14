@@ -69,6 +69,7 @@ export interface ScorerRecallMoment {
   chatSignals?: unknown[];
   audioSignals?: unknown[];
   contentLane?: string;
+  payoffType?: string;
   laneScore?: number;
 }
 
@@ -134,6 +135,7 @@ export function buildRecallUnion(
     if ((moment.chatSignals?.length ?? 0) > 0 || (moment.scores?.chatIntensity ?? 0) > 0) routes.push("chat-eruption");
     if ((moment.audioSignals?.length ?? 0) > 0 || (moment.scores?.audioMagnitude ?? 0) > 0) routes.push("audio-peak");
     if (moment.contentLane) routes.push(`lane:${moment.contentLane}`);
+    if (moment.payoffType) routes.push(`payoff:${moment.payoffType}`);
     return {
       momentId: moment.id,
       routes,
@@ -142,7 +144,7 @@ export function buildRecallUnion(
       endSec: moment.suggestedEndSec,
       description: moment.description,
       score: typeof moment.laneScore === "number" ? moment.laneScore * 100 : (moment.scores?.composite ?? 0) * 10,
-      categories: moment.contentLane ? [moment.contentLane] : [],
+      categories: [moment.contentLane, moment.payoffType].filter((value): value is string => Boolean(value)),
     };
   });
 

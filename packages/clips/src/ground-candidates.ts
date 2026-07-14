@@ -182,20 +182,31 @@ export function buildArcGroundingReport(params: {
   };
 }
 
-function loadRecallCandidates(streamDir: string, jobId: string): RecallUnionInput[] {
+export function loadRecallCandidates(streamDir: string, jobId: string): RecallUnionInput[] {
   const unionPath = join(streamDir, "recall-union.json");
-  if (existsSync(unionPath)) {
-    return JSON.parse(readFileSync(unionPath, "utf-8")) as RecallUnionInput[];
+  const semanticPath = join(streamDir, "recall-candidates.json");
+  const signalPath = join(streamDir, "signal-recall.json");
+  const momentsPath = join(streamDir, "moments.json");
+  const scorerPath = existsSync(signalPath) ? signalPath : momentsPath;
+  const hasSemantic = existsSync(semanticPath);
+  const hasScorer = existsSync(scorerPath);
+
+  if (!hasSemantic && !hasScorer) {
+    if (existsSync(unionPath)) {
+      return JSON.parse(readFileSync(unionPath, "utf-8")) as RecallUnionInput[];
+    }
+    throw new Error("Recall artifacts missing; run transcript review or signal recall first");
   }
 
-  const signalPath = join(streamDir, "signal-recall.json");
-  if (!existsSync(signalPath)) {
-    throw new Error("recall-union.json missing; run transcript review or signal recall first");
-  }
-  const scorerMoments = JSON.parse(readFileSync(signalPath, "utf-8")) as ScorerRecallMoment[];
-  const union = buildRecallUnion(jobId, [], scorerMoments);
+  const semanticCandidates = hasSemantic
+    ? JSON.parse(readFileSync(semanticPath, "utf-8"))
+    : [];
+  const scorerMoments = hasScorer
+    ? JSON.parse(readFileSync(scorerPath, "utf-8")) as ScorerRecallMoment[]
+    : [];
+  const union = buildRecallUnion(jobId, semanticCandidates, scorerMoments);
   writeFileSync(unionPath, JSON.stringify(union, null, 2), "utf-8");
-  log.warn(`Built scorer-only recall union with ${union.length} candidates`);
+  log.info(`Refreshed recall union with ${union.length} candidates`);
   return union;
 }
 
