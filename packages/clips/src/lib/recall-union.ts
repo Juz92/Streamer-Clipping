@@ -149,6 +149,20 @@ export function buildRecallUnion(
   return mergeRecallAnchors(jobId, [...semanticAnchors, ...scorerAnchors]);
 }
 
+export function resolveRecallUnionCandidate(
+  union: RecallUnionCandidate[],
+  routeMomentId: string,
+): RecallUnionCandidate {
+  const matches = union.filter((candidate) =>
+    candidate.momentId === routeMomentId
+    || candidate.routeEvidence.some((evidence) => evidence.momentId === routeMomentId),
+  );
+  if (matches.length !== 1) {
+    throw new Error(`Recall route ${routeMomentId} resolves to ${matches.length} union candidates`);
+  }
+  return matches[0];
+}
+
 export interface PersistRecallUnionOptions<T extends SemanticRecallCandidate> {
   jobDir: string;
   jobId: string;

@@ -7,6 +7,7 @@ import {
   makeSemanticRecallMomentId,
   mergeRecallAnchors,
   persistRecallUnion,
+  resolveRecallUnionCandidate,
 } from "../src/lib/recall-union.js";
 import { loadPool, savePool } from "../src/lib/candidate-pool.js";
 
@@ -64,6 +65,7 @@ test("overlapping routes merge without losing provenance or primary identity", (
     union[0].routeEvidence.map((evidence) => evidence.momentId).sort(),
     ["moment-audio-1", "semantic-0"],
   );
+  assert.equal(resolveRecallUnionCandidate(union, "moment-audio-1").candidateId, "job-123:semantic-0");
 });
 
 test("candidate identity survives boundary corrections", () => {

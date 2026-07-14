@@ -28,8 +28,11 @@ import {
 } from "./lib/notebooklm-parser.js";
 import { scorePick } from "./lib/notebooklm-scorer.js";
 import { loadHeatmap, scoreHeatmapBonus, type HeatPoint } from "./lib/heatmap-extractor.js";
-import { makeCandidateId } from "./lib/candidate-contract.js";
-import { makeSemanticRecallMomentId, persistRecallUnion } from "./lib/recall-union.js";
+import {
+  makeSemanticRecallMomentId,
+  persistRecallUnion,
+  resolveRecallUnionCandidate,
+} from "./lib/recall-union.js";
 
 const log = createLogger("notebooklm-review");
 const POOL_PATH = join(DATA_DIR, "clips", "candidate-pool.json");
@@ -393,43 +396,8 @@ async function main(): Promise<void> {
 
   const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
 
-  // Step 8: Sort by score and cap only the production derivative.
-  const sortedIndices = Array.from(scores.keys()).sort(
-    (a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0),
-  );
-  const sortedPicks = sortedIndices.map((i) => deduped[parseInt(i, 10)]).slice(0, cli.top);
-  log.info(`Capped to top ${cli.top} picks (${sortedIndices.length} total before cap)`);
-
-  // Step 9: Write notebooklm-moments.json
-  const nlmMoments = sortedPicks.map((p, i) => ({
-    id: makeSemanticRecallMomentId(p),
-    momentId: makeSemanticRecallMomentId(p),
-    candidateId: makeCandidateId(jobId, makeSemanticRecallMomentId(p)),
-    startSec: p.startSec,
-    endSec: p.endSec,
-    durationSec: p.endSec - p.startSec,
-    description: p.hook,
-    viralScore: scores.get(`${sortedIndices[i]}`) ?? 0,
-    categories: p.categories,
-    hook: p.hook,
-    quote: p.quote,
-    setupNeeded: p.setupNeeded,
-    archetype: inferArchetype(p.categories),
-    visualType: p.visualType,
-    coldOpenSec: (p as any).coldOpenSec,
-    naturalEndSec: (p as any).naturalEndSec,
-    thumbnailSec: (p as any).thumbnailSec,
-    flashSec: (p as any).flashSec ?? p.flashSec,
-    titleDrafts: (p as any).titleDrafts,
-    rubric: (p as any).rubric,
-    viralSubScores: (p as any).viralSubScores,
-  }));
-
-  const nlmMomentsPath = join(manifest.jobDir, "notebooklm-moments.json");
-  writeFileSync(nlmMomentsPath, JSON.stringify(nlmMoments, null, 2), "utf-8");
-  log.info(`Wrote ${nlmMoments.length} picks → ${nlmMomentsPath}`);
-
-  // Step 10: Persist the uncapped semantic + scorer/chat/audio recall union.
+  // Persist the uncapped union before producing a ranked derivative so merged
+  // route IDs resolve to the one surviving canonical candidate identity.
   const { union } = persistRecallUnion({
     jobDir: manifest.jobDir,
     jobId,
@@ -440,7 +408,49 @@ async function main(): Promise<void> {
   });
   log.info(`Persisted ${union.length} uncapped recall-union candidates`);
 
-  // Step 11: Write human-readable review markdown
+  // Step 8: Write an uncapped source-order enrichment derivative. Scores remain
+  // annotations only; post-ground ranking/capping belongs to Issue #8.
+  const seenCandidateIds = new Set<string>();
+  const nlmMoments = deduped
+    .map((p, sourceIndex) => {
+      const semanticMomentId = makeSemanticRecallMomentId(p);
+      const canonical = resolveRecallUnionCandidate(union, semanticMomentId);
+      return {
+        id: canonical.momentId,
+        momentId: canonical.momentId,
+        candidateId: canonical.candidateId,
+        startSec: canonical.startSec,
+        endSec: canonical.endSec,
+        durationSec: canonical.durationSec,
+        description: p.hook,
+        viralScore: scores.get(`${sourceIndex}`) ?? 0,
+        categories: canonical.categories,
+        hook: p.hook,
+        quote: p.quote,
+        setupNeeded: p.setupNeeded,
+        archetype: inferArchetype(p.categories),
+        visualType: p.visualType,
+        coldOpenSec: (p as any).coldOpenSec,
+        naturalEndSec: (p as any).naturalEndSec,
+        thumbnailSec: (p as any).thumbnailSec,
+        flashSec: (p as any).flashSec ?? p.flashSec,
+        titleDrafts: (p as any).titleDrafts,
+        rubric: (p as any).rubric,
+        viralSubScores: (p as any).viralSubScores,
+      };
+    })
+    .filter((moment) => {
+      if (seenCandidateIds.has(moment.candidateId)) return false;
+      seenCandidateIds.add(moment.candidateId);
+      return true;
+    });
+  log.info(`Wrote ${nlmMoments.length} unique source-order enrichments (${union.length} total recall candidates)`);
+
+  const nlmMomentsPath = join(manifest.jobDir, "notebooklm-moments.json");
+  writeFileSync(nlmMomentsPath, JSON.stringify(nlmMoments, null, 2), "utf-8");
+  log.info(`Wrote ${nlmMoments.length} picks → ${nlmMomentsPath}`);
+
+  // Step 10: Write human-readable review markdown
   const analysisDir = join(manifest.jobDir, "analysis");
   mkdirSync(analysisDir, { recursive: true });
   const reviewMdPath = join(analysisDir, "notebooklm-review.md");

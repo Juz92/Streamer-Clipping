@@ -18,6 +18,12 @@ import {
   chooseCanonicalMomentSource,
   type CandidateIdentity,
 } from "./lib/candidate-contract.js";
+import {
+  loadArcGrounding,
+  passesArcGrounding,
+  type ArcGroundingResult,
+  type BeatMap,
+} from "./lib/arc-grounding.js";
 export { hasFirstThreeSecondHook } from "./quality-gates.js";
 export { chooseCanonicalMomentSource as chooseMomentSource } from "./lib/candidate-contract.js";
 
@@ -122,6 +128,8 @@ interface GateResult {
   score: number;
   reasons: string[];
   recommendedAction: string;
+  groundingStatus: "GROUNDED" | "BLOCKED" | "MISSING";
+  beats?: BeatMap;
   signalMetrics?: SignalMetrics;
 }
 
@@ -398,18 +406,25 @@ function calculateSignalMetrics(
   };
 }
 
-function scoreMoment(
+export function scoreMoment(
   moment: CanonicalMoment,
   rank: number,
   trim?: TrimEntry,
   signalMoment?: MomentLike,
+  grounding?: ArcGroundingResult,
 ): GateResult {
   let score = 100;
   const reasons: string[] = [];
   let forceBlock = false;
+  const arcGatePassed = passesArcGrounding(grounding);
+  if (!arcGatePassed) {
+    score -= 100;
+    forceBlock = true;
+    reasons.push(grounding?.missingEvidence.join("; ") || "Missing source-aligned arc grounding");
+  }
   const notes = parseTrimNotes(trim?.notes);
-  const startSec = notes.sourceStart ?? moment.startSec ?? moment.suggestedStartSec;
-  const endSec = notes.sourceEnd ?? moment.endSec ?? moment.suggestedEndSec;
+  const startSec = grounding?.beats.setupStartSec ?? notes.sourceStart ?? moment.startSec ?? moment.suggestedStartSec;
+  const endSec = grounding?.beats.reactionEndSec ?? notes.sourceEnd ?? moment.endSec ?? moment.suggestedEndSec;
   const duration = trim?.totalDuration ?? trim?.contentDuration ?? moment.durationSec ?? (startSec != null && endSec != null ? endSec - startSec : undefined);
   const hook = moment.hook ?? moment.hookText ?? "";
   const desc = moment.description ?? "";
@@ -543,18 +558,10 @@ function scoreMoment(
 
   score = Math.max(0, Math.min(100, Math.round(score)));
 
-  let status: GateStatus = "PASS";
-  let recommendedAction = "Proceed to render";
-  if (forceBlock || score < 40) {
-    status = "BLOCK";
-    recommendedAction = "Do not render/upload; pick a different moment";
-  } else if (score < 55) {
-    status = "REPLACE";
-    recommendedAction = "Prefer alternate candidate unless manually approved";
-  } else if (score < 65) {
-    status = "RECUT";
-    recommendedAction = "Recut for clearer setup/payoff before render";
-  }
+  const status: GateStatus = arcGatePassed ? "PASS" : "BLOCK";
+  const recommendedAction = arcGatePassed
+    ? "Arc Gate passed; defer hook and taste ranking to downstream gates"
+    : "Do not render/upload; source grounding is incomplete";
 
   return {
     rank,
@@ -564,6 +571,8 @@ function scoreMoment(
     score,
     reasons,
     recommendedAction,
+    groundingStatus: grounding?.status ?? "MISSING",
+    beats: grounding?.beats,
     signalMetrics,
   };
 }
@@ -585,10 +594,16 @@ function main(): void {
   const moments = loadMoments(streamDir, jobId);
   const signalMoments = loadSignalMoments(streamDir);
   const trims = loadTrimEntries(streamDir, jobId);
+  const groundingByCandidate = loadArcGrounding(streamDir);
+  const trimmedCandidates = new Set(trims.map((trim) => trim.candidateId));
+  const hasTrimResults = existsSync(join(streamDir, "trim-results.json"));
 
   const selected = moments
     .map((m, i) => ({ moment: m, rank: i + 1 }))
-    .filter(({ rank }) => !args.clips || args.clips.includes(rank));
+    .filter(({ moment, rank }) =>
+      (!args.clips || args.clips.includes(rank))
+      && (!hasTrimResults || trimmedCandidates.has(moment.candidateId)),
+    );
 
   if (selected.length === 0) {
     log.error("No selected moments to gate");
@@ -600,6 +615,7 @@ function main(): void {
     rank,
     trims.find((t) => t.candidateId === moment.candidateId),
     findSignalMoment(moment, signalMoments),
+    groundingByCandidate.get(moment.candidateId),
   ));
 
   // Upgrade threshold status when the CLI min score is higher than the built-in tiers.

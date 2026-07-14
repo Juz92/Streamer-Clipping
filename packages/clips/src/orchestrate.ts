@@ -23,7 +23,7 @@ export { blocksMissingQaReview, blocksMissingTranscriptReview } from "./quality-
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "notebooklm-review", "pick-quality", "trim", "story-gate", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "review-package", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "ground-candidates", "pick-quality", "trim", "story-gate", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "review-package", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface RunRecord {
@@ -204,7 +204,7 @@ function getStartStep(args: OrchestrateArgs): Step {
           return "story-gate";
         }
         if (manifest.phase === "notebooklm-reviewed") {
-          return "pick-quality";
+          return "ground-candidates";
         }
         if (manifest.phase === "analyzed") {
           return "notebooklm-review";
@@ -408,21 +408,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // Shadow-run the autonomous ranker until its 2-VOD Precision@5 gate passes;
-  // after that it promotes only the learned top three.
-  if (shouldRun(startIdx, "notebooklm-review") && streamId) {
-    const rankerCmd = "python scripts/autonomous-ranker.py run";
-    if (args.dryRun) log.info(`[DRY RUN] Would run: ${rankerCmd}`);
-    else {
-      try {
-        run(rankerCmd, "Autonomous signal enrichment and ranking");
-      } catch (e) {
-        warn(`Autonomous ranker stayed in shadow mode: ${(e as Error).message}`);
-      }
-    }
+  // Step 4: Ground every recall candidate against raw source evidence before ranking.
+  // Automatic continuation is deliberately blocked until Issue #8 provides the
+  // grounded ranking gate. Explicit --from pick-quality remains a manual test path.
+  if (shouldRun(startIdx, "ground-candidates") && streamId) {
+    const groundCmd = `${tsx} ${base}/ground-candidates.ts --stream ${streamId}`;
+    if (args.dryRun) log.info(`[DRY RUN] Would run: ${groundCmd}`);
+    else run(groundCmd, "Source-aligned candidate grounding");
+    warn("Grounding complete. Automatic ranking/trim is paused until Issue #8; resume explicitly with --from pick-quality only for manual testing.");
+    return;
   }
 
-  // Step 4: Pick-quality pass - normalize setup/payoff and mark suggested clip.
+  // Step 5: Pick-quality pass - consume grounded setup/payoff and mark suggested clip.
   if (shouldRun(startIdx, "pick-quality") && streamId) {
     const qualityCmd = `${tsx} ${base}/pick-quality.ts --stream ${streamId}`;
     if (args.dryRun) {
