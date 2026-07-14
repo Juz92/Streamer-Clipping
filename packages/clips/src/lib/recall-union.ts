@@ -3,9 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalizeMoment, type CandidateIdentity } from "./candidate-contract.js";
 import {
-  appendCandidates,
   loadPool,
-  removeByJobId,
+  savePool,
   type CandidatePointer,
 } from "./candidate-pool.js";
 
@@ -212,11 +211,13 @@ export function syncRecallUnionToPool(options: SyncRecallUnionPoolOptions): void
       )
       .map((candidate) => candidate.candidateId),
   );
-  removeByJobId(options.poolPath, options.jobId);
-  appendCandidates(
-    options.poolPath,
-    pointers.filter((candidate) => !immutableIds.has(candidate.candidateId)),
+  existingPool.candidates = existingPool.candidates.filter(
+    (candidate) => candidate.jobId !== options.jobId || immutableIds.has(candidate.candidateId),
   );
+  existingPool.candidates.push(
+    ...pointers.filter((candidate) => !immutableIds.has(candidate.candidateId)),
+  );
+  savePool(options.poolPath, existingPool);
 }
 
 export interface PersistRecallUnionOptions<T extends SemanticRecallCandidate> {
