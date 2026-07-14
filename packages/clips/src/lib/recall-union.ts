@@ -175,25 +175,37 @@ export interface SyncRecallUnionPoolOptions {
 
 export function syncRecallUnionToPool(options: SyncRecallUnionPoolOptions): void {
   const now = new Date().toISOString();
-  const pointers: CandidatePointer[] = options.union.map((candidate) => ({
-    candidateId: candidate.candidateId,
-    jobId: candidate.jobId,
-    momentId: candidate.momentId,
-    streamId: options.streamId,
-    streamDate: options.streamDate,
-    categories: candidate.categories,
-    viralScore: candidate.recallScore ?? 0,
-    startSec: candidate.startSec,
-    endSec: candidate.endSec,
-    durationSec: candidate.durationSec,
-    hook: candidate.description,
-    recallRoutes: candidate.recallRoutes,
-    routeEvidence: candidate.routeEvidence,
-    status: "pending",
-    statusUpdatedAt: now,
-  }));
+  const existingPool = loadPool(options.poolPath);
+  const existingById = new Map(
+    existingPool.candidates.map((candidate) => [candidate.candidateId, candidate]),
+  );
+  const pointers: CandidatePointer[] = options.union.map((candidate) => {
+    const existing = existingById.get(candidate.candidateId);
+    return {
+      candidateId: candidate.candidateId,
+      jobId: candidate.jobId,
+      momentId: candidate.momentId,
+      streamId: options.streamId,
+      streamDate: options.streamDate,
+      categories: candidate.categories,
+      viralScore: candidate.recallScore ?? 0,
+      startSec: candidate.startSec,
+      endSec: candidate.endSec,
+      durationSec: candidate.durationSec,
+      hook: candidate.description,
+      recallRoutes: candidate.recallRoutes,
+      routeEvidence: candidate.routeEvidence,
+      status: existing?.status ?? "pending",
+      statusUpdatedAt: existing?.statusUpdatedAt ?? now,
+      postedDate: existing?.postedDate,
+      youtubeVideoId: existing?.youtubeVideoId,
+      youtubeUrl: existing?.youtubeUrl,
+      youtubePerformance: existing?.youtubePerformance,
+      weeklyCompilationId: existing?.weeklyCompilationId,
+    };
+  });
   const immutableIds = new Set(
-    loadPool(options.poolPath).candidates
+    existingPool.candidates
       .filter((candidate) =>
         candidate.jobId === options.jobId
         && ["posted-daily", "posted-weekly", "archived"].includes(candidate.status),

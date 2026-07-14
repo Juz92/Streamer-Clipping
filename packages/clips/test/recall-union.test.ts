@@ -229,11 +229,25 @@ test("refreshed recall union synchronizes new scorer candidates into the canonic
       union,
     });
 
-    const pool = loadPool(poolPath);
+    let pool = loadPool(poolPath);
     assert.equal(pool.candidates.length, 1);
     assert.equal(pool.candidates[0].candidateId, "job-sync:scorer-wow");
     assert.deepEqual(pool.candidates[0].categories, ["peanut-plays", "wow"]);
     assert.ok(pool.candidates[0].recallRoutes?.includes("payoff:wow"));
+
+    pool.candidates[0].status = "rejected";
+    pool.candidates[0].statusUpdatedAt = "2026-07-15T01:02:03.000Z";
+    savePool(poolPath, pool);
+    syncRecallUnionToPool({
+      poolPath,
+      jobId: "job-sync",
+      streamId: "stream-sync",
+      streamDate: "2026-07-15",
+      union,
+    });
+    pool = loadPool(poolPath);
+    assert.equal(pool.candidates[0].status, "rejected");
+    assert.equal(pool.candidates[0].statusUpdatedAt, "2026-07-15T01:02:03.000Z");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
