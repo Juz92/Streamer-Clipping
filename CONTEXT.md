@@ -1,10 +1,16 @@
 # Domain glossary
 
-- **Candidate** — A source-stream time range proposed for review before final trimming or rendering.
-- **Performance Positive** — A published Short selected because its audience performance is high. It is evidence of market response, not proof that the moment is funny.
-- **Comedy Positive** — A Short whose premise, escalation, and payoff were evidence-reviewed as genuinely comedic. `mixed` and `false` examples are excluded from strict humor-positive training.
+- **Source Anchor** — A timestamp nominated by one recall route, such as a Twitch clip, transcript window, chat reaction, audio event, or gameplay detector. It is evidence that something may have happened, not a final clip or quality verdict.
+- **Candidate Arc** — A bounded raw-stream region expanded around one or more Source Anchors. One immutable `candidateId` must survive grounding, trimming, rendering, review, and outcome joins.
+- **Beat Map** — The temporal structure of a Candidate Arc: `setupStart`, `premiseClear`, `actionOrEscalationStart`, `payoffStart`, `payoffEnd`, `reactionEnd`, and optional `flashMoment`.
+- **Arc Gate** — Objective editorial checks applied before taste: understandable premise, meaningful escalation/action, visible or audible payoff, clean ending, useful reaction tail, no missing context, and visual proof for gameplay nominations.
+- **Recall Lane** — An independent candidate-nomination route. Conversational humour and visually driven gameplay use different evidence even when they share downstream grounding.
+- **Editorial Short** — The rendered output. Added titles, captions, flash opens, commentary, and pacing belong to the edit and must not be confused with the natural quality of the raw source start.
+- **Compilation Candidate** — Multiple unrelated micro-arcs intentionally packaged as one Editorial Short. It is not a valid single-arc retrieval label.
+- **Performance Positive** — A published Short selected because audience performance is high. It is evidence of market response, not proof that the moment is funny or source-aligned.
+- **Comedy Positive** — A Short whose premise, escalation, and payoff were evidence-reviewed as genuinely comedic. `mixed` and `false` examples are excluded from strict humour-positive training.
 - **Taste Positive** — A candidate Justin personally labels `lol` or `smiled`. This is the authoritative label for Justin-specific ranking.
-- **Taste Score** — The numeric target for ranking: `lol = 1.0`, `smiled = 0.5`, and `nothing`, `context-missing`, or rejected clips = `0.0`.
-- **Hard Negative** — A candidate Justin reviewed and rejected as `nothing`, `not-funny`, generic gameplay, weak premise, or no payoff.
-- **Reference Bank** — The callable set of transcripts, Claude Watch evidence, structural summaries, and source media used to compare candidates with known examples.
-- **Shadow Ranker** — A ranker that writes evaluation results but cannot change production clip selection until its holdout gate passes.
+- **Taste Score** — `lol = 1.0`, `smiled = 0.5`; `nothing`, `context-missing`, rejected, or otherwise unapproved = `0.0`.
+- **Hard Negative** — A candidate Justin rejected as `nothing`, `not-funny`, generic gameplay, weak premise, missing context, bad cut, or no payoff.
+- **Reference Bank** — Edited output examples and their structural evidence. Unless aligned to a raw VOD, it is an editorial pattern library rather than source-discovery ground truth.
+- **Shadow Ranker** — A ranker that writes evaluation results but cannot alter production selection until its holdout gate passes.
