@@ -78,6 +78,15 @@ The positives are not simply “funny dialogue” or “high action.” They rep
 
 The action-positive examples also have a legible premise. A kill, a scream or chaotic movement is rarely enough on its own.
 
+A second pass over the stored analysis and timestamp evidence reinforces the pattern, with an important caveat: these are heuristic counts from the existing reports, not fresh frame-by-frame labels.
+
+- 19/21 strict comedy examples show their first hook/premise evidence within 0–3 seconds.
+- 16/21 use a reversal, trap, betrayal, contradiction, or comparable turn.
+- 19/21 place the final payoff/reaction evidence within five seconds of the clip end.
+- 12/21 use an explicit squad/friend/guest dynamic.
+- 20/21 use prominent captions and 19/21 use an avatar or facecam.
+- The useful reaction tail is typically only 1–4 seconds after the payoff.
+
 ### Hooks are often editorial, not naturally present in the source
 
 Many successful examples use an added title, a punchline-forward caption, a recognisable guest name, or a flash of the result. The raw source does not always begin with a strong first frame. Therefore discovery must find the complete arc; the editor can synthesize the hook later. Penalising a source window because its natural first three seconds are not already a finished hook confuses **source quality** with **edit quality**.
@@ -404,6 +413,9 @@ Build from raw source windows, not edited Shorts alone:
 - nearby same-VOD negatives;
 - conversational, hybrid and visual-gameplay positives;
 - explicit beat boundaries;
+- self-contained/context level and what carries the context (`dialogue`, title, caption, or visual);
+- whether visual proof is required and the primary evidence modality;
+- distinctive repetition versus tactical filler;
 - a separate compilation label;
 - no forced positive quota per VOD.
 
