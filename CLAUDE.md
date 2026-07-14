@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Automated gaming clip extraction pipeline for The Burnt Peanut livestreams. Produces 9:16 Shorts for YouTube, TikTok, and Instagram Reels.
 
+## Agent skills
+
+### Issue tracker
+
+Local Markdown under `.scratch/` is the active tracker while GitHub issue writes are unavailable. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default local triage statuses. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the repo's single-context domain layout and canonical V2 strategy document. See `docs/agents/domain.md`.
+
 ## Architecture
 
 - npm workspaces monorepo with **3 packages**: `shared`, `clips`, `remotion`
