@@ -1,6 +1,7 @@
 # Domain glossary
 
-- **Source Anchor** — A timestamp nominated by one recall route, such as a Twitch clip, transcript window, chat reaction, audio event, or gameplay detector. It is evidence that something may have happened, not a final clip or quality verdict.
+- **Source Anchor** — A raw-VOD timestamp/window plus provenance from one recall route. Anchors nominate regions; they are not publish decisions.
+- **Recall Union** — The uncapped, source-time-ordered union of semantic nominations and scorer/chat/audio anchors. Overlapping routes merge without losing `routeEvidence`; ranking never deletes recall candidates.
 - **Candidate Arc** — A bounded raw-stream region expanded around one or more Source Anchors. One immutable `candidateId` must survive grounding, trimming, rendering, review, and outcome joins.
 - **Candidate ID** — The job-scoped identity `${jobId}:${momentId}` assigned when a candidate enters the pool. Rank and mutable source/trim boundaries are never identity. A conflicting ID fails closed.
 - **Beat Map** — The temporal structure of a Candidate Arc: `setupStart`, `premiseClear`, `actionOrEscalationStart`, `payoffStart`, `payoffEnd`, `reactionEnd`, and optional `flashMoment`.

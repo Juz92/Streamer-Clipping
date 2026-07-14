@@ -12,7 +12,7 @@
 
 import "dotenv/config";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createLogger } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
@@ -228,17 +228,40 @@ function shouldRun(startIdx: number, step: Step): boolean {
 function hasTranscriptReviewArtifact(streamId: string): boolean {
   const dir = findStreamDir(streamId);
   if (!dir) return false;
-  for (const file of ["notebooklm-moments.json", "unified-moments.json"]) {
+  const hasNonEmptyArray = (file: string): boolean => {
     const path = join(dir, file);
-    if (!existsSync(path)) continue;
+    if (!existsSync(path)) return false;
     try {
       const parsed = JSON.parse(readFileSync(path, "utf-8"));
-      if (Array.isArray(parsed) && parsed.length > 0) return true;
+      return Array.isArray(parsed) && parsed.length > 0;
     } catch {
-      // Ignore malformed enrichment artifacts; downstream can fall back to scorer moments.
+      return false;
     }
-  }
-  return false;
+  };
+  const hasRankedDerivative = hasNonEmptyArray("notebooklm-moments.json")
+    || hasNonEmptyArray("unified-moments.json");
+  return hasRankedDerivative && hasNonEmptyArray("recall-union.json");
+}
+
+function quarantineReviewArtifacts(streamId: string): void {
+  const dir = findStreamDir(streamId);
+  if (!dir) return;
+  const files = [
+    "notebooklm-moments.json",
+    "unified-moments.json",
+    "recall-candidates.json",
+    "recall-union.json",
+  ].filter((file) => existsSync(join(dir, file)));
+  if (files.length === 0) return;
+
+  const quarantineDir = join(
+    dir,
+    "stale-review-artifacts",
+    new Date().toISOString().replace(/[:.]/g, "-"),
+  );
+  mkdirSync(quarantineDir, { recursive: true });
+  for (const file of files) renameSync(join(dir, file), join(quarantineDir, file));
+  log.info(`Quarantined ${files.length} stale review artifact(s) after fresh analysis`);
 }
 
 function bypassReason(flag: string, dryRun: boolean): string {
@@ -310,6 +333,7 @@ async function main(): Promise<void> {
       log.info(`[DRY RUN] Would run: ${cmd}`);
     } else {
       run(cmd, "Analyze & detect moments");
+      quarantineReviewArtifacts(streamId);
     }
   }
 

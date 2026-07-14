@@ -195,13 +195,11 @@ Catchphrases added to tier-1 signal detection:
 
 ## Key Learnings (Production Rules)
 
-### 15-Clip Hard Cap (ENFORCED IN PIPELINE)
-- **Maximum 15 clips per job, all categories combined.** This is enforced at three pipeline stages:
-  - `notebooklm-review.ts` — caps output to `--top N` (default 15) before writing `notebooklm-moments.json`
-  - `scan.ts mergeSources()` — sorts by viralityScore and slices to `maxClips` (default 15) before writing `unified-moments.json`
-  - `orchestrate.ts` — passes `--top ${args.top}` (default 15) to both `analyze.ts` and `notebooklm-review.ts`
-- Override with `--top N` on the orchestrator (e.g. `--top 10` for a smaller batch).
-- **Why:** Reviewing 39 clips is unsustainable. Quality over quantity — pick the best 15 and make them excellent.
+### 15-Clip Production Cap (NOT A RECALL CAP)
+- Recall must remain complete. `analyze.ts` writes every lane-clearing scene and legacy signal anchor to `signal-recall.json`; transcript reviewers write all semantic nominations to `recall-candidates.json`; `recall-union.json` merges both with route evidence and no score cap.
+- `notebooklm-moments.json` remains the ranked `--top N` production derivative (default 15). Rendering/review volume is capped there, after recall is preserved.
+- `scan.ts mergeSources()` is also uncapped and source-time ordered. It must never regenerate IDs from rank.
+- Override production volume with `--top N` on the orchestrator. Never reduce `recall-union.json` to make review easier; downstream grounding/ranking owns that decision.
 
 ### Caption Timing (CRITICAL)
 - **YouTube VTT word timestamps are unreliable** — they have variable 0.3-1.0s drift with no consistent offset. Cannot be fixed with a global shift.

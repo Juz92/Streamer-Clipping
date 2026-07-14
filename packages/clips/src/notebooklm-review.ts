@@ -28,12 +28,8 @@ import {
 } from "./lib/notebooklm-parser.js";
 import { scorePick } from "./lib/notebooklm-scorer.js";
 import { loadHeatmap, scoreHeatmapBonus, type HeatPoint } from "./lib/heatmap-extractor.js";
-import {
-  appendCandidates,
-  removeByJobId,
-  type CandidatePointer,
-} from "./lib/candidate-pool.js";
 import { makeCandidateId } from "./lib/candidate-contract.js";
+import { makeSemanticRecallMomentId, persistRecallUnion } from "./lib/recall-union.js";
 
 const log = createLogger("notebooklm-review");
 const POOL_PATH = join(DATA_DIR, "clips", "candidate-pool.json");
@@ -144,7 +140,6 @@ async function main(): Promise<void> {
   if (cli.force && manifest.notebookId) {
     log.info(`--force: deleting old notebook ${manifest.notebookId}`);
     deleteNotebook(manifest.notebookId);
-    removeByJobId(POOL_PATH, manifest.jobDir.split(/[\\/]/).pop() ?? "");
     manifest.notebookId = undefined;
     manifest.notebookSourceId = undefined;
   }
@@ -225,9 +220,18 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 5: Flatten + dedup
+  // Step 5: Flatten + dedup. Enrichment-only runs must start from the
+  // existing full recall artifact; an empty query set must never clear the pool.
   const allPicks: NotebookLMPick[] = [];
-  for (const arr of picksBySource.values()) allPicks.push(...arr);
+  if (cli.enrichOnly) {
+    const recallPath = join(manifest.jobDir, "recall-candidates.json");
+    if (!existsSync(recallPath)) {
+      throw new Error("--enrich-only requires an existing recall-candidates.json artifact");
+    }
+    allPicks.push(...JSON.parse(readFileSync(recallPath, "utf-8")) as NotebookLMPick[]);
+  } else {
+    for (const arr of picksBySource.values()) allPicks.push(...arr);
+  }
   const deduped = dedupePicks(allPicks);
   log.info(`Total ${allPicks.length} picks → ${deduped.length} after dedup`);
 
@@ -387,7 +391,9 @@ async function main(): Promise<void> {
     };
   }
 
-  // Step 8: Sort by score descending, cap at --top (default 15)
+  const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
+
+  // Step 8: Sort by score and cap only the production derivative.
   const sortedIndices = Array.from(scores.keys()).sort(
     (a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0),
   );
@@ -396,7 +402,9 @@ async function main(): Promise<void> {
 
   // Step 9: Write notebooklm-moments.json
   const nlmMoments = sortedPicks.map((p, i) => ({
-    id: `nlm-${String(i + 1).padStart(3, "0")}`,
+    id: makeSemanticRecallMomentId(p),
+    momentId: makeSemanticRecallMomentId(p),
+    candidateId: makeCandidateId(jobId, makeSemanticRecallMomentId(p)),
     startSec: p.startSec,
     endSec: p.endSec,
     durationSec: p.endSec - p.startSec,
@@ -421,25 +429,16 @@ async function main(): Promise<void> {
   writeFileSync(nlmMomentsPath, JSON.stringify(nlmMoments, null, 2), "utf-8");
   log.info(`Wrote ${nlmMoments.length} picks → ${nlmMomentsPath}`);
 
-  // Step 10: Append to candidate pool
-  const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
-  const pointers: CandidatePointer[] = nlmMoments.map((m) => ({
-    candidateId: makeCandidateId(jobId, m.id),
+  // Step 10: Persist the uncapped semantic + scorer/chat/audio recall union.
+  const { union } = persistRecallUnion({
+    jobDir: manifest.jobDir,
     jobId,
-    momentId: m.id,
     streamId: manifest.streamId,
     streamDate: manifest.uploadDate,
-    categories: m.categories,
-    viralScore: m.viralScore,
-    startSec: m.startSec,
-    endSec: m.endSec,
-    durationSec: m.durationSec,
-    hook: m.hook,
-    status: "pending" as const,
-    statusUpdatedAt: new Date().toISOString(),
-  }));
-  appendCandidates(POOL_PATH, pointers);
-  log.info(`Appended ${pointers.length} candidates to ${POOL_PATH}`);
+    semanticCandidates: deduped,
+    poolPath: POOL_PATH,
+  });
+  log.info(`Persisted ${union.length} uncapped recall-union candidates`);
 
   // Step 11: Write human-readable review markdown
   const analysisDir = join(manifest.jobDir, "analysis");

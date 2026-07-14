@@ -322,8 +322,9 @@ async function main(): Promise<void> {
     log.info(`Arcs in top 5: ${topScenes.slice(0, 5).filter(s => s.sceneId.startsWith("arc-")).length}`);
   }
 
-  // Convert top scenes back to Moment format for downstream compatibility
-  const sceneMoments: Moment[] = topScenes.map((sceneScore, idx) => {
+  // Convert every lane-clearing scene for recall. The production shortlist is
+  // sliced later, after the uncapped signal artifact has been preserved.
+  const sceneMoments: Moment[] = reviewedScenes.map((sceneScore, idx) => {
     const w = sceneScore.bestClipWindow;
     return {
       id: "scene-" + sceneScore.sceneId,
@@ -384,7 +385,7 @@ async function main(): Promise<void> {
   const usedWindows = new Set<string>();
   const finalMoments: Moment[] = [];
 
-  for (const m of sceneMoments) {
+  for (const m of sceneMoments.slice(0, top)) {
     const key = `${Math.floor(m.suggestedStartSec / 5)}-${Math.floor(m.suggestedEndSec / 5)}`;
     if (!usedWindows.has(key)) {
       usedWindows.add(key);
@@ -404,12 +405,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Re-rank using id field since Moment doesn't have rank
-  for (let i = 0; i < finalMoments.length; i++) {
-    finalMoments[i].id = `moment-${i + 1}`;
-  }
+  const selectedSceneCount = finalMoments.filter((moment) => moment.id.startsWith("scene-")).length;
+  log.info(`Final: ${finalMoments.length} moments (${selectedSceneCount} scene-based + ${finalMoments.length - selectedSceneCount} legacy fallback)`);
 
-  log.info(`Final: ${finalMoments.length} moments (${sceneMoments.length} scene-based + ${finalMoments.length - sceneMoments.length} legacy fallback)`);
+  const signalRecall: Moment[] = [];
+  const recallWindows = new Set<string>();
+  for (const moment of [...sceneMoments, ...legacyMoments]) {
+    const key = `${Math.floor(moment.suggestedStartSec / 5)}-${Math.floor(moment.suggestedEndSec / 5)}`;
+    if (recallWindows.has(key)) continue;
+    recallWindows.add(key);
+    signalRecall.push(moment);
+  }
+  const signalRecallPath = join(streamDir, "signal-recall.json");
+  writeFileSync(signalRecallPath, JSON.stringify(signalRecall, null, 2), "utf-8");
+  log.info(`Saved ${signalRecall.length} uncapped signal anchors to ${signalRecallPath}`);
 
   // Save moments
   const momentsPath = join(streamDir, "moments.json");

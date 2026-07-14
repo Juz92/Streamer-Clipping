@@ -22,6 +22,15 @@ export interface CandidatePointer extends CandidateIdentity {
   endSec?: number;
   durationSec: number;
   hook: string;
+  recallRoutes?: string[];
+  routeEvidence?: Array<{
+    momentId: string;
+    source: string;
+    routes: string[];
+    startSec: number;
+    endSec: number;
+    score?: number;
+  }>;
   status:
     | "pending"
     | "posted-daily"

@@ -87,3 +87,17 @@ test("mergeSources: all three sources combined preserves distinct picks", () => 
   assert.ok(unified.some((u) => u.source === "automated"));
   assert.ok(unified.some((u) => u.source === "notebooklm"));
 });
+
+test("mergeSources: recall is not capped or re-identified by rank", () => {
+  const automated = Array.from({ length: 20 }, (_, index) => ({
+    ...automatedA,
+    id: `signal-${index}`,
+    suggestedStartSec: index * 100,
+    suggestedEndSec: index * 100 + 40,
+  }));
+  const unified = mergeSources([], automated as any[], []);
+  assert.equal(unified.length, 20);
+  assert.equal(unified[0].id, "signal-0");
+  assert.deepEqual(unified[0].sourceRoutes, ["automated"]);
+  assert.deepEqual(unified[0].sourceMomentIds, ["signal-0"]);
+});

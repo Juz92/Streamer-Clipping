@@ -37,8 +37,8 @@ import {
 } from "./lib/notebooklm-parser.js";
 import { scorePick } from "./lib/notebooklm-scorer.js";
 import { loadHeatmap, scoreHeatmapBonus, type HeatPoint } from "./lib/heatmap-extractor.js";
-import { appendCandidates, removeByJobId, type CandidatePointer } from "./lib/candidate-pool.js";
 import { makeCandidateId } from "./lib/candidate-contract.js";
+import { makeSemanticRecallMomentId, persistRecallUnion } from "./lib/recall-union.js";
 
 const log = createLogger("gpt55-review");
 const POOL_PATH = join(DATA_DIR, "clips", "candidate-pool.json");
@@ -322,13 +322,17 @@ async function main(): Promise<void> {
     (p as any).viralSubScores = { ...result.breakdown, rubric: rubric ?? null, funnyQuote: funny.funnyQuote, humorPotential: funny.humorPotential, blendedFinal: blended };
   }
 
-  // Step 9: Sort, cap, and write output
+  const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
+
+  // Step 9: Sort, cap, and write the production derivative.
   const sortedIndices = Array.from(scores.keys()).sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0));
   const sortedPicks = sortedIndices.map((i) => deduped[parseInt(i, 10)]).slice(0, cli.top);
   log.info(`Capped to top ${cli.top} picks (${sortedIndices.length} total)`);
 
   const nlmMoments = sortedPicks.map((p, i) => ({
-    id: `nlm-${String(i + 1).padStart(3, "0")}`,
+    id: makeSemanticRecallMomentId(p),
+    momentId: makeSemanticRecallMomentId(p),
+    candidateId: makeCandidateId(jobId, makeSemanticRecallMomentId(p)),
     startSec: p.startSec,
     endSec: p.endSec,
     durationSec: p.endSec - p.startSec,
@@ -355,26 +359,16 @@ async function main(): Promise<void> {
   writeFileSync(nlmMomentsPath, JSON.stringify(nlmMoments, null, 2), "utf-8");
   log.info(`Wrote ${nlmMoments.length} picks → ${nlmMomentsPath}`);
 
-  // Step 10: Replace this job's pending candidates in the canonical pool.
-  const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
-  removeByJobId(POOL_PATH, jobId);
-  const pointers: CandidatePointer[] = nlmMoments.map((m) => ({
-    candidateId: makeCandidateId(jobId, m.id),
+  // Step 10: Persist the uncapped semantic + scorer/chat/audio recall union.
+  const { union } = persistRecallUnion({
+    jobDir: manifest.jobDir,
     jobId,
-    momentId: m.id,
     streamId: manifest.streamId,
     streamDate: manifest.uploadDate,
-    categories: m.categories,
-    viralScore: m.viralScore,
-    startSec: m.startSec,
-    endSec: m.endSec,
-    durationSec: m.durationSec,
-    hook: m.hook,
-    status: "pending" as const,
-    statusUpdatedAt: new Date().toISOString(),
-  }));
-  appendCandidates(POOL_PATH, pointers);
-  log.info(`Appended ${pointers.length} candidates to pool`);
+    semanticCandidates: deduped,
+    poolPath: POOL_PATH,
+  });
+  log.info(`Persisted ${union.length} uncapped recall-union candidates`);
 
   // Step 11: Write review markdown
   const analysisDir = join(manifest.jobDir, "analysis");

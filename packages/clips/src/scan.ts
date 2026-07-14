@@ -18,6 +18,8 @@ interface ClipSegment {
 interface UnifiedMoment {
   id: string;
   source: "manual" | "automated" | "notebooklm" | "both";
+  sourceRoutes: Array<"manual" | "automated" | "notebooklm">;
+  sourceMomentIds: string[];
   startSec: number;
   endSec: number;
   durationSec: number;
@@ -666,11 +668,13 @@ function mergeManualAndAutomated(
     if (overlappingAuto.length > 0) {
       // Manual pick overlaps with automated pick(s)
       const bestAuto = overlappingAuto[0];
-      usedAutoIds.add(bestAuto.id);
+      for (const auto of overlappingAuto) usedAutoIds.add(auto.id);
 
       const unified_moment: UnifiedMoment = {
-        id: `both-${String(unified.length + 1).padStart(3, "0")}`,
+        id: `manual-${String(i + 1).padStart(3, "0")}`,
         source: "both",
+        sourceRoutes: ["manual", "automated"],
+        sourceMomentIds: [`manual-${String(i + 1).padStart(3, "0")}`, ...overlappingAuto.map((auto) => auto.id)],
         startSec: manual.startSec,
         endSec: manual.endSec,
         durationSec: manual.endSec - manual.startSec,
@@ -700,6 +704,8 @@ function mergeManualAndAutomated(
       const manual_moment: UnifiedMoment = {
         id: `manual-${String(unified.length + 1).padStart(3, "0")}`,
         source: "manual",
+        sourceRoutes: ["manual"],
+        sourceMomentIds: [`manual-${String(i + 1).padStart(3, "0")}`],
         startSec: manual.startSec,
         endSec: manual.endSec,
         durationSec: manual.endSec - manual.startSec,
@@ -717,8 +723,10 @@ function mergeManualAndAutomated(
   for (const auto of automatedMoments) {
     if (!usedAutoIds.has(auto.id)) {
       const auto_moment: UnifiedMoment = {
-        id: `auto-${String(unified.length + 1).padStart(3, "0")}`,
+        id: auto.id,
         source: "automated",
+        sourceRoutes: ["automated"],
+        sourceMomentIds: [auto.id],
         startSec: auto.suggestedStartSec,
         endSec: auto.suggestedEndSec,
         durationSec: auto.suggestedDurationSec,
@@ -745,21 +753,7 @@ function mergeManualAndAutomated(
     }
   }
 
-  // Sort: manual picks (higher score) first, then automated
-  unified.sort((a, b) => {
-    if (a.source === "manual" && b.source !== "manual") return -1;
-    if (b.source === "manual" && a.source !== "manual") return 1;
-    return b.viralityScore - a.viralityScore;
-  });
-
-  // Re-ID after sort
-  for (let i = 0; i < unified.length; i++) {
-    const prefix = unified[i].source === "both" ? "both" :
-                   unified[i].source === "manual" ? "manual" : "auto";
-    unified[i].id = `${prefix}-${String(i + 1).padStart(3, "0")}`;
-  }
-
-  return unified;
+  return unified.sort((a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id));
 }
 
 /**
@@ -776,7 +770,6 @@ export function mergeSources(
   manualPicks: ManualPick[],
   automatedMoments: Moment[],
   notebookLMPicks: NotebookLMPickForMerge[],
-  maxClips = 15,
 ): UnifiedMoment[] {
   // Pass 1: existing manual + automated merge
   const pass1 = mergeManualAndAutomated(manualPicks, automatedMoments);
@@ -792,6 +785,8 @@ export function mergeSources(
     if (overlap) {
       // Merge: upgrade source, take max score, fold enrichment
       overlap.source = "both";
+      overlap.sourceRoutes = [...new Set([...overlap.sourceRoutes, "notebooklm" as const])];
+      overlap.sourceMomentIds = [...new Set([...overlap.sourceMomentIds, nlm.id])];
       overlap.viralityScore = Math.max(overlap.viralityScore, nlm.viralScore);
       overlap.categories = nlm.categories;
       overlap.coldOpenSec = nlm.coldOpenSec;
@@ -805,8 +800,10 @@ export function mergeSources(
     } else {
       // New standalone NotebookLM pick
       result.push({
-        id: `nlm-${String(result.length + 1).padStart(3, "0")}`,
+        id: nlm.id,
         source: "notebooklm",
+        sourceRoutes: ["notebooklm"],
+        sourceMomentIds: [nlm.id],
         startSec: nlm.startSec,
         endSec: nlm.endSec,
         durationSec: nlm.durationSec,
@@ -827,9 +824,8 @@ export function mergeSources(
     }
   }
 
-  // Cap total output to maxClips, sorted by viralityScore descending
-  const sorted = result.sort((a, b) => b.viralityScore - a.viralityScore);
-  return sorted.slice(0, maxClips);
+  // Recall remains uncapped and source-time ordered. Ranking is downstream.
+  return result.sort((a, b) => a.startSec - b.startSec || a.id.localeCompare(b.id));
 }
 
 function displayUnifiedMoments(
@@ -1009,9 +1005,11 @@ async function main(): Promise<void> {
       log.info(`Loaded ${toDisplay.length} unified moments from ${unifiedPath}`);
     } else if (existsSync(momentsPath)) {
       // Convert automated moments to UnifiedMoment format
-      toDisplay = moments.map((m, i) => ({
-        id: `auto-${String(i + 1).padStart(3, "0")}`,
+      toDisplay = moments.map((m) => ({
+        id: m.id,
         source: "automated" as const,
+        sourceRoutes: ["automated"] as const,
+        sourceMomentIds: [m.id],
         startSec: m.suggestedStartSec,
         endSec: m.suggestedEndSec,
         durationSec: m.suggestedDurationSec,
