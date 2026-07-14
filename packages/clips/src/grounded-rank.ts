@@ -75,11 +75,10 @@ function clamp01(value: number): number {
 }
 
 function candidateLane(candidate: RankCandidate): string {
-  for (const category of candidate.categories ?? []) {
-    const lane = normalizeContentLane(category.replace(/^lane:/, ""));
-    if (lane) return lane;
-  }
-  return "unclassified";
+  const lanes = (candidate.categories ?? [])
+    .map((category) => normalizeContentLane(category.replace(/^lane:/, "")))
+    .filter((lane): lane is NonNullable<typeof lane> => lane != null);
+  return lanes.find(isGameplayContentLane) ?? lanes[0] ?? "unclassified";
 }
 
 function editorialStrength(candidate: RankCandidate): number {

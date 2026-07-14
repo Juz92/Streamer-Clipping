@@ -85,7 +85,17 @@ test("unseen gameplay lanes stay review-only after the global taste gate passes"
     }
   }
 
-  const report = buildGroundedRanking({ candidates, grounding, labels, minimumLabels: 10 });
+  const mixedLaneCandidates = candidates.map((candidate) =>
+    candidate.candidateId === "job-current:gameplay"
+      ? { ...candidate, categories: ["peanut-bits", "peanut-plays"] }
+      : candidate,
+  );
+  const report = buildGroundedRanking({
+    candidates: mixedLaneCandidates,
+    grounding,
+    labels,
+    minimumLabels: 10,
+  });
   const gameplay = report.ranked.find((candidate) => candidate.candidateId === "job-current:gameplay");
 
   assert.equal(report.gate.status, "PASS");
