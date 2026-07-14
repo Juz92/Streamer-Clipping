@@ -52,7 +52,7 @@ export interface ArcGroundingReport {
   streamId: string;
   jobId: string;
   generatedAt: string;
-  localizer: "source-heuristic-v1";
+  localizer: "source-envelope-v2";
   summary: {
     candidates: number;
     grounded: number;
@@ -100,6 +100,27 @@ function audioReactionEvidence(path: string | null): ReactionEvidence[] {
   }));
 }
 
+function loadCorrectedBeats(streamId: string): Map<string, BeatMap> {
+  const path = join(process.cwd(), "data", "clips", "manual-review-feedback.json");
+  if (!existsSync(path)) return new Map<string, BeatMap>();
+  const parsed = JSON.parse(readFileSync(path, "utf-8")) as {
+    records?: Array<{
+      streamId?: string;
+      decisions?: Array<{ candidateId?: string; correctedBeats?: BeatMap | null }>;
+    }>;
+  };
+  const corrected = new Map<string, BeatMap>();
+  for (const record of parsed.records ?? []) {
+    if (record.streamId !== streamId) continue;
+    for (const decision of record.decisions ?? []) {
+      if (decision.candidateId && decision.correctedBeats) {
+        corrected.set(decision.candidateId, decision.correctedBeats);
+      }
+    }
+  }
+  return corrected;
+}
+
 export function buildArcGroundingReport(params: {
   streamId: string;
   jobId: string;
@@ -107,6 +128,7 @@ export function buildArcGroundingReport(params: {
   transcript: Array<{ startSec: number; endSec: number; text: string }>;
   reactions: ReactionEvidence[];
   visualProofs?: Map<string, VisualProofRecord>;
+  correctedBeats?: Map<string, BeatMap>;
 }): ArcGroundingReport {
   const visualProofs = params.visualProofs ?? new Map<string, VisualProofRecord>();
   const seen = new Set<string>();
@@ -124,15 +146,20 @@ export function buildArcGroundingReport(params: {
       recallRoutes: row.recallRoutes ?? [],
     };
     const proof = visualProofs.get(candidate.candidateId);
+    const corrected = params.correctedBeats?.get(candidate.candidateId);
     const windowStart = Math.max(0, candidate.startSec - 90);
     const windowEnd = candidate.endSec + 90;
     return groundCandidateArc({
       candidate,
       transcript: params.transcript.filter((cue) => cue.endSec >= windowStart && cue.startSec <= windowEnd),
       reactions: params.reactions.filter((event) => event.timestampSec >= windowStart && event.timestampSec <= windowEnd),
-      proposedBeats: proof?.beats,
+      proposedBeats: corrected ?? proof?.beats,
       visualProof: proof,
-      localizer: "source-heuristic-v1",
+      localizer: corrected
+        ? "review-correction-v1"
+        : proof?.beats
+          ? "visual-proof-v1"
+          : "source-envelope-v2",
     });
   });
 
@@ -141,7 +168,7 @@ export function buildArcGroundingReport(params: {
     streamId: params.streamId,
     jobId: params.jobId,
     generatedAt: new Date().toISOString(),
-    localizer: "source-heuristic-v1",
+    localizer: "source-envelope-v2",
     summary: {
       candidates: results.length,
       grounded,
@@ -200,6 +227,7 @@ function main(): void {
     args.visualProofsPath ?? (existsSync(defaultVisualProofsPath) ? defaultVisualProofsPath : undefined),
   );
 
+  const correctedBeats = loadCorrectedBeats(manifest.streamId);
   const report = buildArcGroundingReport({
     streamId: manifest.streamId,
     jobId,
@@ -207,6 +235,7 @@ function main(): void {
     transcript,
     reactions: [...chatReactions, ...audioReactions].sort((a, b) => a.timestampSec - b.timestampSec),
     visualProofs,
+    correctedBeats,
   });
   const outPath = join(streamDir, "arc-grounding.json");
   writeFileSync(outPath, JSON.stringify(report, null, 2), "utf-8");

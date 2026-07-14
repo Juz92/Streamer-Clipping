@@ -282,23 +282,23 @@ export function localizeArcFromEvidence(
   }
 
   const beforePayoff = transcript.filter((cue) => cue.endSec <= payoffCue!.startSec + 0.5);
-  const setupCue = beforePayoff[0];
   const actionCue = beforePayoff[beforePayoff.length - 1];
   const premiseCue = beforePayoff.length >= 2
     ? beforePayoff[beforePayoff.length - 2]
     : beforePayoff[0];
-  const reactionCues = transcript.filter((cue) =>
-    cue.endSec >= payoffCue!.endSec
-    && cue.startSec <= payoffCue!.endSec + 15,
-  );
-  const lastReactionCue = reactionCues[reactionCues.length - 1];
-  const lastReactionEvent = reactions
-    .filter((event) => event.timestampSec >= payoffCue!.startSec && event.timestampSec <= payoffCue!.endSec + 15)
-    .at(-1);
+  const setupCue = [...beforePayoff]
+    .filter((cue) => !premiseCue || cue.startSec <= premiseCue.startSec)
+    .sort((a, b) => Math.abs(a.startSec - candidate.startSec) - Math.abs(b.startSec - candidate.startSec))[0];
+  const reactionCue = [...transcript]
+    .filter((cue) => cue.endSec >= payoffCue!.endSec && cue.startSec >= payoffCue!.startSec - 1.5)
+    .sort((a, b) => Math.abs(a.endSec - candidate.endSec) - Math.abs(b.endSec - candidate.endSec))[0];
+  const reactionEvent = [...reactions]
+    .filter((event) => event.timestampSec >= payoffCue!.startSec)
+    .sort((a, b) => Math.abs(a.timestampSec - candidate.endSec) - Math.abs(b.timestampSec - candidate.endSec))[0];
   const reactionEndSec = Math.max(
     payoffCue.endSec,
-    lastReactionCue?.endSec ?? payoffCue.endSec,
-    lastReactionEvent ? lastReactionEvent.timestampSec + 2 : payoffCue.endSec,
+    reactionCue?.endSec ?? payoffCue.endSec,
+    reactionEvent ? reactionEvent.timestampSec + 2 : payoffCue.endSec,
   );
 
   return {

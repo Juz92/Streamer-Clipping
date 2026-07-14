@@ -8,6 +8,7 @@ import {
   type ArcGroundingInput,
   type BeatMap,
 } from "../src/lib/arc-grounding.js";
+import { buildArcGroundingReport } from "../src/ground-candidates.js";
 
 const candidate = {
   candidateId: "job-004:recall-a",
@@ -137,6 +138,64 @@ test("source heuristic emits a complete ordered proposal from transcript plus re
   }
   const result = groundCandidateArc(input({ proposedBeats: proposal, localizer: "source-heuristic-v1" }));
   assert.equal(result.status, "GROUNDED");
+});
+
+test("source heuristic anchors outer beats to the candidate semantic envelope", () => {
+  const semanticCandidate = { ...candidate, startSec: 100, endSec: 126 };
+  const semanticTranscript = [
+    { startSec: 85, endSec: 90, text: "Unrelated earlier filler." },
+    ...transcript,
+    { startSec: 130, endSec: 134, text: "A new topic starts here." },
+  ];
+
+  const proposal = localizeArcFromEvidence({
+    candidate: semanticCandidate,
+    transcript: semanticTranscript,
+    reactions,
+  });
+
+  assert.equal(proposal.setupStartSec, 100);
+  assert.equal(proposal.reactionEndSec, 126);
+});
+
+test("semantic-envelope setup remains before the computed premise", () => {
+  const lateEnvelopeCandidate = { ...candidate, startSec: 115, endSec: 126 };
+  const proposal = localizeArcFromEvidence({
+    candidate: lateEnvelopeCandidate,
+    transcript,
+    reactions,
+  });
+
+  assert.ok((proposal.setupStartSec as number) <= (proposal.premiseClearSec as number));
+  const result = groundCandidateArc(input({
+    candidate: lateEnvelopeCandidate,
+    proposedBeats: proposal,
+    localizer: "source-envelope-v2",
+  }));
+  assert.equal(result.status, "GROUNDED");
+});
+
+test("reviewed corrected beats override automatic grounding by candidateId", () => {
+  const corrected: BeatMap = {
+    setupStartSec: 100,
+    premiseClearSec: 110,
+    actionStartSec: 112,
+    payoffStartSec: 118,
+    payoffEndSec: 120,
+    reactionEndSec: 126,
+    flashSec: 119,
+  };
+  const report = buildArcGroundingReport({
+    streamId: "stream-1",
+    jobId: candidate.jobId,
+    candidates: [candidate],
+    transcript,
+    reactions,
+    correctedBeats: new Map([[candidate.candidateId, corrected]]),
+  });
+
+  assert.deepEqual(report.results[0].beats, corrected);
+  assert.equal(report.results[0].localizer, "review-correction-v1");
 });
 
 test("chat reactions require unique-chatter rate lift and reject duplicate spam", () => {
