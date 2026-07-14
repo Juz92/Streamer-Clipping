@@ -4,7 +4,7 @@
 
 **Yes, OpusClip explicitly does this.** Its official ClipAnything documentation includes a `Gamer` example, says it analyzes visual/audio/sentiment cues even with little dialogue, supports Twitch/Kick/YouTube/live-stream sources, accepts prompt-guided searches such as “Compile all the hilarious moments,” and processes videos up to 10 hours.
 
-That proves feature fit, not quality. A one-hour benchmark is worth running. Do not build an Opus integration or buy a plan yet.
+That proves feature fit, not quality. A one-hour smoke test is worth running. A fair full-VOD comparison is **not** available for free: the chosen 7h 7m source would require about 427 credits, beyond the 90-credit new-user trial, the 60-minute Free allowance, and a single 300-credit Pro monthly pack. Do not build an Opus integration or buy credits until the smoke test earns it.
 
 ## Official capability evidence
 
@@ -20,15 +20,16 @@ That proves feature fit, not quality. A one-hour benchmark is worth running. Do 
 
 ## Account and cost reality
 
-- Free plan: 60 processing minutes per month and YouTube/local-file import.
+- New users are offered a documented seven-day Pro trial with 90 processing minutes and no credit card; trial exports are watermarked and feature-limited.
+- Free-forever plan: 60 processing minutes per month and YouTube/local-file import.
 - Processing costs one credit per imported source minute.
 - Direct Twitch/Kick import is listed under Pro, but the same public VOD can be supplied through YouTube on Free.
 - API access requires Pro Beta, Max or Business plus an API key.
 - This machine has no Opus-related key/configuration, and the Opus web dashboard currently shows `Sign in`.
 
-Therefore the cheapest valid test is the web app and one exact 60-minute YouTube source range. No API code and no paid plan.
+Therefore the cheapest repeatable test is the web app and one exact 60-minute YouTube source range. It is a smoke test of moment quality and boundaries, not a fair test of full-stream recall. No API code and no paid plan.
 
-## Minimal benchmark
+## Minimal smoke test
 
 ### Source
 
@@ -77,13 +78,13 @@ Use one ClipAnything project and reprompt the completed source. Opus documents r
 
 ## Decision rule
 
-- **Buy:** Opus wins Taste Score@5 and boundary acceptance clearly enough to replace discovery.
-- **Hybrid:** Opus adds accepted moments our routes miss, but its boundaries/ranking need our downstream pipeline.
-- **Build:** Opus does not beat the current system or misses creator-specific humour/gameplay structure.
+- **Stop testing Opus:** the smoke-test candidates do not beat or supplement the current top five.
+- **Earn a full benchmark:** Opus clearly adds accepted moments or better boundaries; only then consider enough credits for a complete VOD.
+- **Do not choose Buy from the smoke test alone:** a fixed 60-minute segment cannot prove long-VOD recall.
 
 ## Current status
 
-**GO, blocked on Opus sign-in.** The benchmark has not been run because there is no authenticated Opus session or API key. Creating an account, accepting OAuth permissions or purchasing credits requires Justin's action. No account or paid integration should be created speculatively.
+**CONDITIONAL GO for a 60-minute smoke test; NO-GO for a fair full-VOD benchmark without paid credits.** The smoke test has not been run because there is no authenticated Opus session or API key. Creating an account, accepting OAuth permissions or purchasing credits requires Justin's action. No account or paid integration should be created speculatively.
 
 ## Primary sources
 
