@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   candidateNeedsVisualProof,
   type GroundingCandidate,
@@ -22,6 +22,7 @@ export interface VisualProofReviewItem {
   evidenceTimestampsSec: number[];
   framePaths: string[];
   contactSheetPath: string;
+  previewVideoPath: string;
 }
 
 export interface VisualProofTemplateRecord extends VisualProof {
@@ -68,6 +69,7 @@ export function buildVisualProofReviewPlan(
           join(frameDir, `${String(index + 1).padStart(2, "0")}-${timestamp.toFixed(3)}.jpg`),
         ),
         contactSheetPath: join(outputDir, "contact-sheets", `${encodedId}.jpg`),
+        previewVideoPath: join(outputDir, "videos", `${encodedId}.mp4`),
       };
     });
 
@@ -87,7 +89,7 @@ export function buildVisualProofReviewPlan(
 }
 
 function runFfmpeg(args: string[], context: string): void {
-  const result = spawnSync("ffmpeg", args, {
+  const result = spawnSync("ffmpeg", ["-nostdin", ...args], {
     stdio: "pipe",
     timeout: 120_000,
     windowsHide: true,
@@ -134,13 +136,45 @@ function renderVisualProofReviewPack(
       "-q:v", "2",
       item.contactSheetPath,
     ], `building ${item.candidateId} contact sheet`);
+
+    mkdirSync(dirname(item.previewVideoPath), { recursive: true });
+    runFfmpeg([
+      "-y",
+      "-ss", item.startSec.toFixed(3),
+      "-i", videoPath,
+      "-t", (item.endSec - item.startSec).toFixed(3),
+      "-vf", "scale=-2:720",
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "25",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      "-b:a", "96k",
+      "-movflags", "+faststart",
+      item.previewVideoPath,
+    ], `rendering ${item.candidateId} video preview`);
   }
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function buildReviewHtml(plan: VisualProofReviewPlan): string {
+  const cards = plan.items.map((item, index) => `
+    <article>
+      <h2>#${String(index + 1).padStart(2, "0")} — ${escapeHtml(item.description)}</h2>
+      <p><b>${escapeHtml(item.candidateId)}</b><br>${(item.endSec - item.startSec).toFixed(1)}s · ${escapeHtml(item.categories.join(", "))}</p>
+      <video controls preload="metadata" aria-label="Candidate ${index + 1}" src="videos/${encodeURI(basename(item.previewVideoPath))}"></video>
+    </article>`).join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gameplay proof video review</title><style>body{font:16px Arial;background:#111;color:#eee;max-width:1100px;margin:auto;padding:20px}article{border:1px solid #444;border-radius:10px;padding:16px;margin:20px 0;background:#1b1b1b}h2{font-size:19px}p{color:#bbb;line-height:1.5}video{width:100%;max-height:70vh;background:#000}</style></head><body><h1>Gameplay proof video review</h1><p>Watch each complete window and record which numbers show setup → player action → visible result.</p>${cards}</body></html>`;
 }
 
 export interface PreparedVisualProofReviewPack {
   plan: VisualProofReviewPlan;
   planPath: string;
   templatePath: string;
+  reviewHtmlPath: string;
 }
 
 export function prepareVisualProofReviewPack(params: {
@@ -151,6 +185,7 @@ export function prepareVisualProofReviewPack(params: {
 }): PreparedVisualProofReviewPack {
   const planPath = join(params.outputDir, "review-plan.json");
   const templatePath = join(params.outputDir, "visual-proofs.template.json");
+  const reviewHtmlPath = join(params.outputDir, "review.html");
   if (existsSync(templatePath) && !params.force) {
     throw new Error(`Visual proof template already exists: ${templatePath}`);
   }
@@ -160,7 +195,8 @@ export function prepareVisualProofReviewPack(params: {
   mkdirSync(params.outputDir, { recursive: true });
   writeFileSync(planPath, JSON.stringify(plan, null, 2), "utf-8");
   writeVisualProofTemplate(templatePath, plan.proofs, params.force);
-  return { plan, planPath, templatePath };
+  writeFileSync(reviewHtmlPath, buildReviewHtml(plan), "utf-8");
+  return { plan, planPath, templatePath, reviewHtmlPath };
 }
 
 export function writeVisualProofTemplate(

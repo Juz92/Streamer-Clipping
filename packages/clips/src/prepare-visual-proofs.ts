@@ -56,9 +56,10 @@ function main(): void {
   });
 
   log.info(`Prepared ${prepared.plan.items.length} shadow visual-proof candidates`);
+  log.info(`Review page: ${prepared.reviewHtmlPath}`);
   log.info(`Review plan: ${prepared.planPath}`);
   log.info(`Unverified template: ${prepared.templatePath}`);
-  log.warn("Review the frame timelines before changing any proof to verified=true");
+  log.warn("Watch the candidate videos before changing any proof to verified=true");
 }
 
 const __filename = fileURLToPath(import.meta.url);
