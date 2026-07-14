@@ -192,14 +192,16 @@ export function loadRecallCandidates(streamDir: string, jobId: string): RecallUn
   const semanticPath = join(streamDir, "recall-candidates.json");
   const signalPath = join(streamDir, "signal-recall.json");
   const momentsPath = join(streamDir, "moments.json");
-  const scorerPath = existsSync(signalPath) ? signalPath : momentsPath;
+  const hasUnion = existsSync(unionPath);
+  const hasSignal = existsSync(signalPath);
+  if (hasUnion && !hasSignal) {
+    return JSON.parse(readFileSync(unionPath, "utf-8")) as RecallUnionCandidate[];
+  }
+  const scorerPath = hasSignal ? signalPath : momentsPath;
   const hasSemantic = existsSync(semanticPath);
   const hasScorer = existsSync(scorerPath);
 
   if (!hasSemantic && !hasScorer) {
-    if (existsSync(unionPath)) {
-      return JSON.parse(readFileSync(unionPath, "utf-8")) as RecallUnionCandidate[];
-    }
     throw new Error("Recall artifacts missing; run transcript review or signal recall first");
   }
 

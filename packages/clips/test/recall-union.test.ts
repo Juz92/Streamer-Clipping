@@ -207,6 +207,43 @@ test("grounding refreshes a stale derived union from current recall sources", ()
   }
 });
 
+test("grounding never shrinks a complete union from capped moments fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "recall-ground-capped-"));
+  try {
+    const semantic = {
+      momentId: "semantic-current",
+      candidateId: "job-capped:semantic-current",
+      startSec: 100,
+      endSec: 140,
+      hook: "Current semantic candidate",
+      categories: ["peanut-bits"],
+      sourceQuery: "humor",
+    };
+    const scorerMoments = [0, 1, 2].map((index) => ({
+      id: `scorer-${index}`,
+      suggestedStartSec: 500 + index * 100,
+      suggestedEndSec: 540 + index * 100,
+      description: `Scorer candidate ${index}`,
+      contentLane: "squad-chaos",
+      payoffType: "lol",
+      laneScore: 0.8,
+    }));
+    const completeUnion = buildRecallUnion("job-capped", [semantic], scorerMoments);
+    writeFileSync(join(root, "recall-candidates.json"), JSON.stringify([semantic]));
+    writeFileSync(join(root, "moments.json"), JSON.stringify([scorerMoments[0]]));
+    writeFileSync(join(root, "recall-union.json"), JSON.stringify(completeUnion));
+
+    const loaded = loadRecallCandidates(root, "job-capped");
+    const artifact = JSON.parse(readFileSync(join(root, "recall-union.json"), "utf-8"));
+
+    assert.equal(loaded.length, 4);
+    assert.equal(artifact.length, 4);
+    assert.deepEqual(loaded.map((candidate) => candidate.candidateId), completeUnion.map((candidate) => candidate.candidateId));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("refreshed recall union synchronizes new scorer candidates into the canonical pool", () => {
   const root = mkdtempSync(join(tmpdir(), "recall-pool-sync-"));
   const poolPath = join(root, "candidate-pool.json");
