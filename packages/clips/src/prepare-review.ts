@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { chooseReviewPacketClips } from "./quality-gates.js";
+import { CONTENT_LANES } from "./lib/content-lanes.js";
 export { chooseReviewPacketClips } from "./quality-gates.js";
 
 interface CliArgs {
@@ -33,6 +34,7 @@ interface TrimEntry {
 export interface ReviewClip {
   rank: number;
   candidateId: string;
+  momentId: string;
   file: string;
   title: string;
   thumb: string | null;
@@ -112,6 +114,12 @@ function escapeHtml(value: string): string {
 }
 
 export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], suggestedRank: number | null): string {
+  for (const clip of clips) {
+    const separator = clip.candidateId.indexOf(":");
+    if (separator <= 0 || clip.candidateId.slice(separator + 1) !== clip.momentId) {
+      throw new Error(`Candidate id ${clip.candidateId} does not match momentId ${clip.momentId}`);
+    }
+  }
   return JSON.stringify(
     {
       streamId,
@@ -120,16 +128,24 @@ export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], sug
       acceptedSuggestedPick: null,
       notes: "",
       labelOptions: {
+        status: ["keep", "reject", "reserve"],
+        lane: CONTENT_LANES.filter((lane) => lane !== "reject"),
         reaction: ["lol", "smiled", "nothing", "context-missing"],
         rejectionReason: ["weak-premise", "no-payoff", "needs-context", "generic-gameplay", "bad-cut", "wrong-lane", "not-funny", "other"],
+        arcIntent: ["single-arc", "compilation"],
       },
       decisions: clips.map((clip) => ({
         rank: clip.rank,
         candidateId: clip.candidateId,
+        momentId: clip.momentId,
         file: clip.file,
-        status: "pending",
+        status: "reserve",
+        lane: null,
         reaction: null,
         rejectionReason: null,
+        coldOpenAccepted: null,
+        correctedBeats: null,
+        arcIntent: "single-arc",
         notes: "",
       })),
     },
@@ -278,8 +294,8 @@ async function main(): Promise<void> {
   for (const file of shortFiles) {
     const rank = rankFromFile(file);
     const trim = trimByRank.get(rank);
-    if (!trim?.candidateId) {
-      throw new Error(`Rendered clip ${rank} has no candidateId in trim-results.json`);
+    if (!trim?.candidateId || !trim.momentId) {
+      throw new Error(`Rendered clip ${rank} has no canonical candidate identity in trim-results.json`);
     }
     const padded = String(rank).padStart(2, "0");
     copyFileSync(join(shortsDir, file), join(reviewShortsDir, file));
@@ -293,6 +309,7 @@ async function main(): Promise<void> {
     clips.push({
       rank,
       candidateId: trim.candidateId,
+      momentId: trim.momentId,
       file,
       title: titles.get(rank) ?? file.replace(/^\d{2}-/, "").replace(/\.mp4$/i, ""),
       thumb: copiedYt ? `thumbnails/${ytThumb}` : null,
