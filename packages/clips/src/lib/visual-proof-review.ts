@@ -8,6 +8,9 @@ import {
 } from "./arc-grounding.js";
 
 const FRAME_COUNT = 6;
+// ponytail: fixed review context; make it lane-specific only if boundary labels prove this insufficient.
+const REVIEW_LEAD_SEC = 5;
+const REVIEW_TAIL_SEC = 15;
 const REVIEW_SOURCE = "private-frame-timeline-v1";
 
 export type VisualProofReviewCandidate = GroundingCandidate;
@@ -23,6 +26,8 @@ export interface VisualProofReviewItem {
   framePaths: string[];
   contactSheetPath: string;
   previewVideoPath: string;
+  previewStartSec: number;
+  previewEndSec: number;
 }
 
 export interface VisualProofTemplateRecord extends VisualProof {
@@ -70,6 +75,8 @@ export function buildVisualProofReviewPlan(
         ),
         contactSheetPath: join(outputDir, "contact-sheets", `${encodedId}.jpg`),
         previewVideoPath: join(outputDir, "videos", `${encodedId}.mp4`),
+        previewStartSec: Math.max(0, candidate.startSec - REVIEW_LEAD_SEC),
+        previewEndSec: candidate.endSec + REVIEW_TAIL_SEC,
       };
     });
 
@@ -140,9 +147,9 @@ function renderVisualProofReviewPack(
     mkdirSync(dirname(item.previewVideoPath), { recursive: true });
     runFfmpeg([
       "-y",
-      "-ss", item.startSec.toFixed(3),
+      "-ss", item.previewStartSec.toFixed(3),
       "-i", videoPath,
-      "-t", (item.endSec - item.startSec).toFixed(3),
+      "-t", (item.previewEndSec - item.previewStartSec).toFixed(3),
       "-vf", "scale=-2:720",
       "-c:v", "libx264",
       "-preset", "veryfast",
@@ -164,7 +171,7 @@ function buildReviewHtml(plan: VisualProofReviewPlan): string {
   const cards = plan.items.map((item, index) => `
     <article>
       <h2>#${String(index + 1).padStart(2, "0")} — ${escapeHtml(item.description)}</h2>
-      <p><b>${escapeHtml(item.candidateId)}</b><br>${(item.endSec - item.startSec).toFixed(1)}s · ${escapeHtml(item.categories.join(", "))}</p>
+      <p><b>${escapeHtml(item.candidateId)}</b><br>${(item.endSec - item.startSec).toFixed(1)}s candidate · ${(item.previewEndSec - item.previewStartSec).toFixed(1)}s review · ${escapeHtml(item.categories.join(", "))}</p>
       <video controls preload="metadata" aria-label="Candidate ${index + 1}" src="videos/${encodeURI(basename(item.previewVideoPath))}"></video>
     </article>`).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gameplay proof video review</title><style>body{font:16px Arial;background:#111;color:#eee;max-width:1100px;margin:auto;padding:20px}article{border:1px solid #444;border-radius:10px;padding:16px;margin:20px 0;background:#1b1b1b}h2{font-size:19px}p{color:#bbb;line-height:1.5}video{width:100%;max-height:70vh;background:#000}</style></head><body><h1>Gameplay proof video review</h1><p>Watch each complete window and record which numbers show setup → player action → visible result.</p>${cards}</body></html>`;

@@ -55,6 +55,8 @@ test("visual review plan selects gameplay candidates and creates safe timestampe
   assert.deepEqual(plan.items[0].evidenceTimestampsSec, [102.5, 107.5, 112.5, 117.5, 122.5, 127.5]);
   assert.equal(basename(plan.items[0].contactSheetPath), "job-004%3Agameplay-a.jpg");
   assert.equal(basename(plan.items[0].previewVideoPath), "job-004%3Agameplay-a.mp4");
+  assert.equal(plan.items[0].previewStartSec, 95);
+  assert.equal(plan.items[0].previewEndSec, 145);
   assert.equal(plan.proofs[0].verified, false);
   assert.equal(plan.proofs[0].timestampSec, 117.5);
   assert.deepEqual(plan.proofs[0].evidenceTimestampsSec, plan.items[0].evidenceTimestampsSec);
