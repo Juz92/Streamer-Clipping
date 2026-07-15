@@ -6,6 +6,7 @@ import {
   buildBoundaryReviewPrompt,
   buildPovAttributionPrompt,
   candidateNeedsPovKillAttribution,
+  isFatalBoundaryReviewError,
   validatePovAttributionReview,
 } from "../src/lib/autonomous-boundary-review.js";
 
@@ -148,6 +149,12 @@ test("transient model failures are not cached as current proofs", () => {
       attributionGate: { ...proof.review.attributionGate, evidence: "Attribution model failed: timeout" },
     },
   }, candidate, "google/gemini-3.5-flash"), false);
+});
+
+test("provider HTTP failures stop the boundary review run", () => {
+  assert.equal(isFatalBoundaryReviewError(new Error("OpenRouter 402: balance required")), true);
+  assert.equal(isFatalBoundaryReviewError(new Error("OpenRouter 429: rate limited")), true);
+  assert.equal(isFatalBoundaryReviewError(new Error("OpenRouter returned no review content")), false);
 });
 
 test("unsafe speech snap keeps the safe visual endpoint", () => {

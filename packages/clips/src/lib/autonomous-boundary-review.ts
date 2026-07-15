@@ -319,6 +319,10 @@ export function autonomousProofMatchesCandidate(
     && proof.reviewedCandidateEndSec === candidate.endSec;
 }
 
+export function isFatalBoundaryReviewError(error: unknown): boolean {
+  return error instanceof Error && /^OpenRouter \d{3}:/.test(error.message);
+}
+
 export function autonomousProofIsReusable(
   proof: AutonomousVisualProof,
   candidate: BoundaryReviewCandidate,

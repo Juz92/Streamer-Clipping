@@ -12,6 +12,7 @@ import {
   buildBoundaryReviewPrompt,
   buildPovAttributionPrompt,
   candidateNeedsPovKillAttribution,
+  isFatalBoundaryReviewError,
   validatePovAttributionReview,
   type AutonomousVisualProof,
   type BoundaryReviewCandidate,
@@ -145,6 +146,7 @@ async function callOpenRouter(videoPath: string, prompt: string, model: string, 
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("OpenRouter returned non-object JSON");
       return parsed;
     } catch (error) {
+      if (isFatalBoundaryReviewError(error)) throw error;
       lastError = error as Error;
     }
   }
@@ -162,6 +164,30 @@ function existingProofsAreFresh(path: string, items: ReviewPlanItem[], model: st
   }
 }
 
+function loadExistingProofs(path: string): AutonomousVisualProof[] {
+  if (!existsSync(path)) return [];
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as AutonomousVisualProof[];
+  } catch {
+    return [];
+  }
+}
+
+function writeProofs(
+  path: string,
+  items: ReviewPlanItem[],
+  proofsByCandidate: Map<string, AutonomousVisualProof>,
+): AutonomousVisualProof[] {
+  const proofs = items.flatMap((item) => {
+    const proof = proofsByCandidate.get(item.candidateId);
+    return proof ? [proof] : [];
+  });
+  const tempPath = `${path}.tmp`;
+  writeFileSync(tempPath, JSON.stringify(proofs, null, 2), "utf-8");
+  renameSync(tempPath, path);
+  return proofs;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   const streamDir = findStreamDir(args.streamId);
@@ -177,8 +203,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const proofs: AutonomousVisualProof[] = [];
+  const proofsByCandidate = new Map(
+    (args.force ? [] : loadExistingProofs(outputPath)).map((proof) => [proof.candidateId, proof]),
+  );
   for (const [index, item] of plan.items.entries()) {
+    const existing = proofsByCandidate.get(item.candidateId);
+    if (existing && autonomousProofIsReusable(existing, item, model)) {
+      log.info(`[${index + 1}/${plan.items.length}] Reusing ${item.candidateId}`);
+      continue;
+    }
     const inputPath = join(reviewDir, "model-inputs", basename(item.previewVideoPath));
     prepareModelInput(item, inputPath, args.force);
     const duration = videoDuration(inputPath);
@@ -210,6 +243,7 @@ async function main(): Promise<void> {
           )),
         };
       } catch (error) {
+        if (isFatalBoundaryReviewError(error)) throw error;
         attributionGate.evidence = `Attribution model failed: ${(error as Error).message.slice(0, 300)}`;
       }
     }
@@ -231,6 +265,7 @@ async function main(): Promise<void> {
           4096,
         );
       } catch (error) {
+        if (isFatalBoundaryReviewError(error)) throw error;
         response = {
           candidateId: item.candidateId,
           objectiveEvent: false,
@@ -260,13 +295,12 @@ async function main(): Promise<void> {
       model,
       attributionGate,
     });
-    proofs.push(proof);
+    proofsByCandidate.set(proof.candidateId, proof);
+    writeProofs(outputPath, plan.items, proofsByCandidate);
     log.info(`  ${proof.verified ? "VERIFIED" : "BLOCKED"}: ${proof.review.rejectionReason ?? proof.review.selectedEndSec}`);
   }
 
-  const tempPath = `${outputPath}.tmp`;
-  writeFileSync(tempPath, JSON.stringify(proofs, null, 2), "utf-8");
-  renameSync(tempPath, outputPath);
+  const proofs = writeProofs(outputPath, plan.items, proofsByCandidate);
   log.info(`Wrote ${outputPath}: ${proofs.filter((proof) => proof.verified).length}/${proofs.length} verified`);
 }
 
