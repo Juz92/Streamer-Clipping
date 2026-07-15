@@ -16,7 +16,7 @@ import type { LayoutMode } from "./lib/layout.js";
 import { planMotion, buildZoompanFilter, type MotionPlan } from "./lib/motion.js";
 import { insertEmojis, CAPTION_EMOJI_FONT } from "./lib/caption-emoji.js";
 import { loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
-import { selectPromotedEntries } from "./quality-gates.js";
+import { assertApprovedReviewWindows, selectPromotedEntries } from "./quality-gates.js";
 
 const log = createLogger("render-fast");
 
@@ -63,6 +63,17 @@ interface StreamStyleOverride {
 // crop makes it look like the old/generic layout, with Peanut tiny in the top
 // panel. These values map to roughly x120 y300 w520 h370 on 1280x720 source.
 const DAILY_PEANUT_STREAM_STYLE_OVERRIDES: Record<string, StreamStyleOverride> = {
+  "wKJwi-MMLJQ": {
+    avatar: DAILY_PEANUT_AVATAR_REGION,
+    gameplayByRank: DAILY_PEANUT_V8_GAMEPLAY_BY_RANK,
+  },
+  "H-_9Fgs5tIg": {
+    // Peanut is bottom-left in both games on this VOD. Match the approved v8
+    // zoom/lift and start gameplay immediately after the avatar silhouette.
+    avatar: { x: 97, y: 684, w: 556, h: 396 },
+    frame0Avatar: { x: 235, y: 560, w: 300, h: 520 },
+    gameplay: { x: 560, y: 0, w: 1012, h: 1080 },
+  },
   gp4sqhiaxNo: {
     // 1280x720 equivalent: x195 y353 w371 h264. This matches the approved v8
     // zoom/lift while preserving the shared bottom-aligned top-panel crop.
@@ -84,6 +95,12 @@ const DAILY_PEANUT_STREAM_STYLE_OVERRIDES: Record<string, StreamStyleOverride> =
     },
   },
 };
+
+function assertStreamStyleCalibrated(streamId: string): void {
+  if (!DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId]) {
+    throw new Error(`No verified avatar/gameplay crop for ${streamId}; probe the stream before rendering`);
+  }
+}
 
 const ENABLE_LEGACY_BODY_HOOK_BANNER = process.env.STREAMER_LEGACY_BODY_HOOK_BANNER === "1";
 
@@ -812,6 +829,8 @@ interface TrimResultEntry {
   candidateId?: string;
   momentId?: string;
   clipFile: string;
+  sourceStartSec?: number;
+  sourceEndSec?: number;
   flashStart: number;
   flashDuration: number;
   contentStart: number;
@@ -823,6 +842,23 @@ interface TrimResultEntry {
 function promotedTrimEntries(streamDir: string, entries: TrimResultEntry[]): TrimResultEntry[] {
   const promoted = loadValidatedGroundedPromoted<{ candidateId?: string; momentId?: string }>(streamDir);
   return selectPromotedEntries(entries, promoted.map((candidate) => candidate.candidateId!));
+}
+
+function enforceApprovedReviewWindows(streamDir: string, entries: TrimResultEntry[], rawClipsDir?: string): void {
+  const selectionPath = join(streamDir, "private-abc-selection.json");
+  if (!existsSync(selectionPath)) return;
+  const durations: Record<string, number> = {};
+  if (rawClipsDir) {
+    for (const entry of entries) {
+      const path = join(rawClipsDir, entry.clipFile);
+      if (existsSync(path)) durations[entry.clipFile] = getVideoDuration(path);
+    }
+  }
+  assertApprovedReviewWindows(
+    JSON.parse(readFileSync(selectionPath, "utf-8")),
+    entries,
+    durations,
+  );
 }
 
 interface TrimLayoutState {
@@ -872,6 +908,7 @@ async function renderFromTrimmer(
   }
 
   const rawClipsDir = join(streamDir, "raw-clips");
+  enforceApprovedReviewWindows(streamDir, trimResults.approved);
   const whisperDir = join(streamDir, "whisper-captions");
   const shortsDir = join(streamDir, "shorts");
   const tempDir = join(streamDir, "temp");
@@ -1075,6 +1112,7 @@ async function renderDirect(
   }
 
   const rawClipsDir = join(streamDir, "raw-clips");
+  enforceApprovedReviewWindows(streamDir, trimResults.approved, rawClipsDir);
   const whisperDir = join(streamDir, "whisper-captions");
   const shortsDir = join(streamDir, "shorts");
   ensureDir(shortsDir);
@@ -1245,6 +1283,7 @@ async function main(): Promise<void> {
     log.error("--stream <id> is required");
     process.exit(1);
   }
+  assertStreamStyleCalibrated(streamId);
 
   // --direct: render raw clips as-is (already assembled by trimmer finalize)
   if (direct) {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blocksMissingQaReview, blocksMissingTranscriptReview, chooseReviewPacketClips, evaluateRenderedShorts, hasFirstThreeSecondHook, hasFreshPreUploadPass, publicationBlockers, selectPromotedEntries } from "../dist/quality-gates.js";
+import { assertApprovedReviewWindows, blocksMissingQaReview, blocksMissingTranscriptReview, chooseReviewPacketClips, evaluateRenderedShorts, hasFirstThreeSecondHook, hasFreshPreUploadPass, publicationBlockers, selectPromotedEntries } from "../dist/quality-gates.js";
 
 test("first-3s hook passes on explicit flash or early signal, fails on slow setup", () => {
   assert.equal(hasFirstThreeSecondHook({ startSec: 100, text: "", flashDuration: 2, events: [] }), true);
@@ -55,6 +55,14 @@ test("render selection keeps only canonical promoted candidates and may return f
   assert.deepEqual(selectPromotedEntries(entries, ["job:b"]), [entries[1]]);
   assert.throws(() => selectPromotedEntries([{ rank: 1 }], ["job:a"]), /candidateId/);
   assert.throws(() => selectPromotedEntries(entries, ["job:missing"]), /No promoted/);
+});
+
+test("rendering cannot change an approved A/B/C review window or its media duration", () => {
+  const selection = { decision: "liked all", candidates: [{ candidateId: "job:a", startSec: 10, endSec: 30 }] };
+  const approved = [{ candidateId: "job:a", sourceStartSec: 10, sourceEndSec: 30, clipFile: "a.mp4" }];
+  assert.doesNotThrow(() => assertApprovedReviewWindows(selection, approved, { "a.mp4": 20.05 }));
+  assert.throws(() => assertApprovedReviewWindows(selection, [{ ...approved[0], sourceStartSec: 12 }]), /window changed/);
+  assert.throws(() => assertApprovedReviewWindows(selection, approved, { "a.mp4": 17 }), /media duration changed/);
 });
 
 test("API publication blocks until every promotion gate passes", () => {

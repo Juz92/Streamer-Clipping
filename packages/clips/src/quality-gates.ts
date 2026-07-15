@@ -82,6 +82,32 @@ export function selectPromotedEntries<T extends { candidateId?: string }>(entrie
   return selected;
 }
 
+export function assertApprovedReviewWindows(
+  selection: { decision?: string; candidates?: Array<{ candidateId?: string; startSec?: number; endSec?: number }> } | null,
+  entries: Array<{ candidateId?: string; sourceStartSec?: number; sourceEndSec?: number; clipFile?: string }>,
+  actualDurations: Record<string, number> = {},
+): void {
+  if (selection?.decision !== "liked all") return;
+  const entriesById = new Map(entries.map((entry) => [entry.candidateId, entry]));
+  for (const approved of selection.candidates ?? []) {
+    const entry = entriesById.get(approved.candidateId);
+    const approvedStart = approved.startSec;
+    const approvedEnd = approved.endSec;
+    const renderStart = entry?.sourceStartSec;
+    const renderEnd = entry?.sourceEndSec;
+    if (!entry || typeof approvedStart !== "number" || typeof approvedEnd !== "number"
+      || typeof renderStart !== "number" || typeof renderEnd !== "number"
+      || Math.abs(renderStart - approvedStart) > 0.05
+      || Math.abs(renderEnd - approvedEnd) > 0.05) {
+      throw new Error(`Approved review window changed for ${approved.candidateId ?? "unknown candidate"}`);
+    }
+    const actualDuration = entry.clipFile ? actualDurations[entry.clipFile] : undefined;
+    if (actualDuration != null && Math.abs(actualDuration - (approvedEnd - approvedStart)) > 0.15) {
+      throw new Error(`Approved review media duration changed for ${approved.candidateId}`);
+    }
+  }
+}
+
 export function publicationBlockers(state: {
   promoted: boolean;
   privateStatus?: string;
