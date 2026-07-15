@@ -251,6 +251,8 @@ function quarantineReviewArtifacts(streamId: string): void {
     "unified-moments.json",
     "recall-candidates.json",
     "recall-union.json",
+    "visual-proofs.json",
+    "visual-proof-review",
   ].filter((file) => existsSync(join(dir, file)));
   if (files.length === 0) return;
 
@@ -408,11 +410,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 4: Ground every recall candidate against raw source evidence before ranking.
+  // Step 4: Autonomously review gameplay boundaries, then ground every recall candidate.
   if (shouldRun(startIdx, "ground-candidates") && streamId) {
+    const prepareCmd = `${tsx} ${base}/prepare-visual-proofs.ts --stream ${streamId}`;
+    const reviewCmd = `${tsx} ${base}/review-visual-boundaries.ts --stream ${streamId}`;
     const groundCmd = `${tsx} ${base}/ground-candidates.ts --stream ${streamId}`;
-    if (args.dryRun) log.info(`[DRY RUN] Would run: ${groundCmd}`);
-    else run(groundCmd, "Source-aligned candidate grounding");
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${prepareCmd}`);
+      log.info(`[DRY RUN] Would run: ${reviewCmd}`);
+      log.info(`[DRY RUN] Would run: ${groundCmd}`);
+    } else {
+      run(prepareCmd, "Prepare bounded gameplay review videos");
+      run(reviewCmd, "Autonomous gameplay boundary review");
+      run(groundCmd, "Source-aligned candidate grounding");
+    }
   }
 
   // Step 5: Rank only grounded candidates. Shadow/failed taste gates never promote.

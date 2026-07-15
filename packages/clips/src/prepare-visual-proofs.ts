@@ -1,10 +1,15 @@
-/** Prepare shadow-only frame timelines and unverified visual-proof templates. */
+/** Prepare gameplay review videos and unverified visual-proof templates. */
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "@ltx/shared";
 import { loadRecallCandidates } from "./ground-candidates.js";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
-import { prepareVisualProofReviewPack } from "./lib/visual-proof-review.js";
+import {
+  prepareVisualProofReviewPack,
+  visualProofReviewPlanMatches,
+  type VisualProofReviewPlan,
+} from "./lib/visual-proof-review.js";
 
 const log = createLogger("prepare-visual-proofs");
 
@@ -48,18 +53,30 @@ function main(): void {
     recallRoutes: candidate.recallRoutes ?? [],
   }));
   const outputDir = args.outputDir ?? join(streamDir, "visual-proof-review");
+  const planPath = join(outputDir, "review-plan.json");
+  let force = args.force;
+  if (!force && existsSync(planPath)) {
+    const existing = JSON.parse(readFileSync(planPath, "utf-8")) as VisualProofReviewPlan;
+    if (
+      visualProofReviewPlanMatches(existing, candidates, outputDir)
+      && existing.items.every((item) => existsSync(item.previewVideoPath))
+    ) {
+      log.info(`Visual review pack is current: ${planPath}`);
+      return;
+    }
+    force = true;
+  }
   const prepared = prepareVisualProofReviewPack({
     videoPath: manifest.videoPath,
     candidates,
     outputDir,
-    force: args.force,
+    force,
   });
 
-  log.info(`Prepared ${prepared.plan.items.length} shadow visual-proof candidates`);
+  log.info(`Prepared ${prepared.plan.items.length} gameplay review candidates`);
   log.info(`Review page: ${prepared.reviewHtmlPath}`);
   log.info(`Review plan: ${prepared.planPath}`);
   log.info(`Unverified template: ${prepared.templatePath}`);
-  log.warn("Watch the candidate videos before changing any proof to verified=true");
 }
 
 const __filename = fileURLToPath(import.meta.url);

@@ -148,6 +148,35 @@ test("unreviewed proof templates stay blocked and are not counted as visual proo
   assert.equal(report.results[0].gates.visualProof, false);
 });
 
+test("stale autonomous visual proofs cannot satisfy Arc Gate", () => {
+  const gameplayCandidate = {
+    ...candidate,
+    categories: ["peanut-plays"],
+    recallRoutes: ["lane:peanut-plays"],
+  };
+  const report = buildArcGroundingReport({
+    streamId: "stream-1",
+    jobId: candidate.jobId,
+    candidates: [gameplayCandidate],
+    transcript,
+    reactions,
+    visualProofs: new Map([[candidate.candidateId, {
+      candidateId: candidate.candidateId,
+      verified: true,
+      timestampSec: 120,
+      evidenceTimestampsSec: [100, 110, 112, 118, 120, 126],
+      source: "autonomous-boundary-v1",
+      description: "POV result verified",
+      beats,
+      reviewedCandidateStartSec: 99,
+      reviewedCandidateEndSec: 130,
+    }]]),
+  });
+
+  assert.equal(report.summary.visualProofs, 0);
+  assert.equal(report.results[0].status, "BLOCKED");
+});
+
 test("source heuristic emits a complete ordered proposal from transcript plus reaction evidence", () => {
   const proposal = localizeArcFromEvidence({ candidate, transcript, reactions });
   const ordered = [

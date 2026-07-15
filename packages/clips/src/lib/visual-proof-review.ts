@@ -10,7 +10,7 @@ import {
 const FRAME_COUNT = 6;
 // ponytail: fixed review context; make it lane-specific only if boundary labels prove this insufficient.
 const REVIEW_LEAD_SEC = 5;
-const REVIEW_TAIL_SEC = 15;
+const REVIEW_TAIL_SEC = 60;
 const REVIEW_SOURCE = "private-frame-timeline-v1";
 
 export type VisualProofReviewCandidate = GroundingCandidate;
@@ -93,6 +93,14 @@ export function buildVisualProofReviewPlan(
       description: "UNREVIEWED — verify the lane claim from the frame timeline before changing verified.",
     })),
   };
+}
+
+export function visualProofReviewPlanMatches(
+  plan: VisualProofReviewPlan,
+  candidates: VisualProofReviewCandidate[],
+  outputDir: string,
+): boolean {
+  return JSON.stringify(plan) === JSON.stringify(buildVisualProofReviewPlan(candidates, outputDir));
 }
 
 function runFfmpeg(args: string[], context: string): void {

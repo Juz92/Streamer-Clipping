@@ -30,6 +30,10 @@ import {
   type VisualProof,
 } from "./lib/arc-grounding.js";
 
+import {
+  autonomousProofMatchesCandidate,
+} from "./lib/autonomous-boundary-review.js";
+
 const log = createLogger("ground-candidates");
 
 interface CliArgs {
@@ -51,6 +55,8 @@ interface RecallUnionInput {
 interface VisualProofRecord extends VisualProof {
   candidateId: string;
   beats?: BeatMap;
+  reviewedCandidateStartSec?: number;
+  reviewedCandidateEndSec?: number;
 }
 
 export interface ArcGroundingReport {
@@ -151,7 +157,17 @@ export function buildArcGroundingReport(params: {
       categories: row.categories ?? [],
       recallRoutes: row.recallRoutes ?? [],
     };
-    const proof = visualProofs.get(candidate.candidateId);
+    const loadedProof = visualProofs.get(candidate.candidateId);
+    const proofIsAutonomous = loadedProof?.source.startsWith("autonomous-boundary-") === true;
+    const proofIsCurrent = !proofIsAutonomous || (
+      typeof loadedProof.reviewedCandidateStartSec === "number"
+      && typeof loadedProof.reviewedCandidateEndSec === "number"
+      && autonomousProofMatchesCandidate({
+        reviewedCandidateStartSec: loadedProof.reviewedCandidateStartSec,
+        reviewedCandidateEndSec: loadedProof.reviewedCandidateEndSec,
+      }, candidate)
+    );
+    const proof = proofIsCurrent ? loadedProof : undefined;
     const corrected = params.correctedBeats?.get(candidate.candidateId);
     const windowStart = Math.max(0, candidate.startSec - 90);
     const windowEnd = candidate.endSec + 90;
@@ -181,7 +197,7 @@ export function buildArcGroundingReport(params: {
       transcriptCues: params.transcript.length,
       chatReactions: params.reactions.filter((event) => event.source === "chat").length,
       audioReactions: params.reactions.filter((event) => event.source === "audio").length,
-      visualProofs: [...visualProofs.values()].filter((proof) => proof.verified).length,
+      visualProofs: results.filter((result) => result.evidence.visualProof?.verified === true).length,
     },
     results,
   };
