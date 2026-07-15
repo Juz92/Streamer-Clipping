@@ -79,6 +79,7 @@ interface MomentLike {
   shockReaction?: number;
   chatSync?: number;
   reactionChain?: number;
+  privateSelection?: string;
   rubric?: Record<string, unknown>;
   viralSubScores?: Record<string, unknown>;
   transcriptSignals?: TranscriptSignalLike[];
@@ -244,6 +245,7 @@ export function hasLaughOutLoudEvidence(moment: MomentLike): boolean {
 
 /** Accept the strongest lane-specific payoff; unclassified legacy artifacts keep the LOL gate. */
 export function hasDiscoveryPayoffEvidence(moment: MomentLike): boolean {
+  if (moment.privateSelection) return true;
   if (moment.contentLane) {
     return passesAutomaticDiscoveryFloor({
       contentLane: moment.contentLane,

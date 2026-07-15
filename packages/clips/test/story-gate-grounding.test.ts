@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scoreMoment } from "../src/story-gate.js";
+import { scoreMoment, hasDiscoveryPayoffEvidence } from "../src/story-gate.js";
 
 const candidateId = "job-004:recall-a";
 const moment = {
@@ -46,6 +46,10 @@ const grounding = {
   evidence: { transcript: [], reactions: [], visualProof: null },
   missingEvidence: [],
 };
+
+test("private A/B/C selection satisfies the discovery evidence floor", () => {
+  assert.equal(hasDiscoveryPayoffEvidence({ privateSelection: "A" }), true);
+});
 
 test("Story Gate keeps taste and hook diagnostics separate from objective Arc Gate", () => {
   const weakTaste = {
