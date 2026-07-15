@@ -320,7 +320,7 @@ export function autonomousProofMatchesCandidate(
 }
 
 export function isFatalBoundaryReviewError(error: unknown): boolean {
-  return error instanceof Error && /^OpenRouter \d{3}:/.test(error.message);
+  return error instanceof Error && /^(?:OpenRouter|Gemini) \d{3}:/.test(error.message);
 }
 
 export function autonomousProofIsReusable(

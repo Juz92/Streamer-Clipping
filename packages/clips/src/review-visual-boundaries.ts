@@ -108,49 +108,51 @@ function loadWords(videoPath: string, item: ReviewPlanItem, force: boolean): Whi
   }));
 }
 
-async function callOpenRouter(videoPath: string, prompt: string, model: string, maxTokens: number): Promise<unknown> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
+async function callGemini(videoPath: string, prompt: string, model: string, maxTokens: number): Promise<unknown> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
   const video = readFileSync(videoPath).toString("base64");
+  const apiModel = model.replace(/^google\//, "");
   let lastError: Error | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: ["Bear", "er ", apiKey].join(""),
-          "HTTP-Referer": "https://github.com/justinhilliard/streamer-clipping",
-          "X-Title": "Streamer Clip Boundary Review",
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${apiModel}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: JSON.stringify({
+            contents: [{
+              role: "user",
+              parts: [
+                { text: prompt },
+                { inlineData: { mimeType: "video/mp4", data: video } },
+              ],
+            }],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: maxTokens,
+              responseMimeType: "application/json",
+            },
+          }),
+          signal: AbortSignal.timeout(240_000),
         },
-        body: JSON.stringify({
-          model,
-          temperature: 0,
-          max_tokens: maxTokens,
-          response_format: { type: "json_object" },
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "video_url", video_url: { url: `data:video/mp4;base64,${video}` } },
-            ],
-          }],
-        }),
-        signal: AbortSignal.timeout(240_000),
-      });
-      if (!response.ok) throw new Error(`OpenRouter ${response.status}: ${(await response.text()).slice(0, 500)}`);
-      const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const content = payload.choices?.[0]?.message?.content?.trim();
-      if (!content) throw new Error("OpenRouter returned no review content");
+      );
+      if (!response.ok) throw new Error(`Gemini ${response.status}: ${(await response.text()).slice(0, 500)}`);
+      const payload = await response.json() as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const content = payload.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!content) throw new Error("Gemini returned no review content");
       const parsed = JSON.parse(content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("OpenRouter returned non-object JSON");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Gemini returned non-object JSON");
       return parsed;
     } catch (error) {
       if (isFatalBoundaryReviewError(error)) throw error;
       lastError = error as Error;
     }
   }
-  throw lastError ?? new Error("OpenRouter review failed");
+  throw lastError ?? new Error("Gemini review failed");
 }
 
 function existingProofsAreFresh(path: string, items: ReviewPlanItem[], model: string): boolean {
@@ -235,7 +237,7 @@ async function main(): Promise<void> {
       try {
         attributionGate = {
           required: true,
-          ...validatePovAttributionReview(await callOpenRouter(
+          ...validatePovAttributionReview(await callGemini(
             attributionInputPath,
             buildPovAttributionPrompt(item.candidateId),
             model,
@@ -258,7 +260,7 @@ async function main(): Promise<void> {
       };
     } else {
       try {
-        response = await callOpenRouter(
+        response = await callGemini(
           inputPath,
           buildBoundaryReviewPrompt(item, duration),
           model,

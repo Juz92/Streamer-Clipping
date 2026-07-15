@@ -154,7 +154,9 @@ test("transient model failures are not cached as current proofs", () => {
 test("provider HTTP failures stop the boundary review run", () => {
   assert.equal(isFatalBoundaryReviewError(new Error("OpenRouter 402: balance required")), true);
   assert.equal(isFatalBoundaryReviewError(new Error("OpenRouter 429: rate limited")), true);
+  assert.equal(isFatalBoundaryReviewError(new Error("Gemini 429: quota exhausted")), true);
   assert.equal(isFatalBoundaryReviewError(new Error("OpenRouter returned no review content")), false);
+  assert.equal(isFatalBoundaryReviewError(new Error("Gemini returned no review content")), false);
 });
 
 test("unsafe speech snap keeps the safe visual endpoint", () => {

@@ -79,7 +79,7 @@ test("visual review plan freshness follows canonical candidate boundaries", () =
   ], outputDir), false);
 });
 
-test("jobs with no visual candidates write an empty proof artifact without OpenRouter", () => {
+test("jobs with no visual candidates write an empty proof artifact without Gemini", () => {
   const streamId = `empty-review-${process.pid}-${Date.now()}`;
   const jobDir = join(repoRoot, "data", "clips", `job-test-${streamId}`);
   const reviewDir = join(jobDir, "visual-proof-review");
@@ -95,7 +95,7 @@ test("jobs with no visual candidates write an empty proof artifact without OpenR
     ], {
       cwd: repoRoot,
       encoding: "utf-8",
-      env: { ...process.env, OPENROUTER_API_KEY: "" },
+      env: { ...process.env, GEMINI_API_KEY: "" },
       windowsHide: true,
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
