@@ -9,16 +9,19 @@
  * Usage:
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id>
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --clips 1,3,5
+ *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --frame0-offsets 1:84,2:29.5,3:27
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --dry-run
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --force   # overwrite existing
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { createLogger } from "@ltx/shared";
 import { generateHookVariants, inferHookPattern } from "./lib/hook-variants.js";
 import { loadManifest } from "./lib/manifest.js";
+import { assertFrame0Package } from "./quality-gates.js";
 
 /** Load ANTHROPIC_API_KEY from .env file at project root if not already in env. */
 function loadEnvKey(): void {
@@ -109,6 +112,7 @@ interface CliArgs {
   all: boolean;
   dryRun: boolean;
   force: boolean;
+  frame0Offsets: Map<number, number>;
 }
 
 function parseArgs(): CliArgs {
@@ -119,6 +123,7 @@ function parseArgs(): CliArgs {
     all: true,
     dryRun: false,
     force: false,
+    frame0Offsets: new Map(),
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -131,10 +136,27 @@ function parseArgs(): CliArgs {
       result.dryRun = true;
     } else if (args[i] === "--force") {
       result.force = true;
+    } else if (args[i] === "--frame0-offsets" && args[i + 1]) {
+      const value = args[++i];
+      if (!/^\d+:\d+(?:\.\d+)?(?:,\d+:\d+(?:\.\d+)?)*$/.test(value)) {
+        throw new Error("--frame0-offsets must use rank:seconds pairs, e.g. 1:84,2:29.5");
+      }
+      for (const pair of value.split(",")) {
+        const [rank, offset] = pair.split(":").map(Number);
+        result.frame0Offsets.set(rank, offset);
+      }
     }
   }
 
   return result;
+}
+
+function getMediaDuration(mediaPath: string): number {
+  const duration = Number(execFileSync("ffprobe", [
+    "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", mediaPath,
+  ], { encoding: "utf-8" }).trim());
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error(`Cannot read media duration: ${mediaPath}`);
+  return duration;
 }
 
 /** Derive a URL-friendly slug from a short filename like "01-hutch-lose-some-weight.mp4" */
@@ -251,7 +273,7 @@ function loadClipSources(jobDir: string, mediaDir: string, filter: number[]): Cl
       humorPotential: moment.humorPotential ?? 0,
       setupNeeded: moment.setupNeeded ?? false,
       viralScore: moment.viralScore ?? moment.viralityScore ?? 50,
-      durationSec: moment.durationSec,
+      durationSec: getMediaDuration(join(mediaDir, filename)),
     });
   }
 
@@ -296,6 +318,7 @@ YOUTUBE SHORTS PACKAGING RULES (non-negotiable):
 4. NO "subscribe", "like", or "smash the bell" language.
 5. Broad-appeal clips may set postFirst=true, but cadence is not a ranking requirement.
 6. Tags: 5-10 relevant tags total after creator tags are merged. Use the game/topic, creator variants and genuine misspellings; generic tag stuffing is forbidden.
+7. Do not invent an expression timestamp. The operator supplies frame0OffsetSec separately after visual contact-sheet review.
 
 DESCRIPTION FORMAT:
 Line 1: a unique sentence naming the creator/topic and exact event, using the primary search phrase naturally.
@@ -544,7 +567,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  if (existsSync(outPath) && !args.force) {
+  if (existsSync(outPath) && !args.force && args.frame0Offsets.size === 0) {
     log.warn(
       `upload-metadata.md already exists at ${outPath}. Use --force to regenerate.`,
     );
@@ -562,6 +585,18 @@ async function main(): Promise<void> {
   if (clips.length === 0) {
     log.error("No clips found to generate metadata for.");
     process.exit(1);
+  }
+
+  const frame0ByRank = new Map(existingFrame0ByRank);
+  args.frame0Offsets.forEach((offset, rank) => frame0ByRank.set(rank, offset));
+  for (const clip of clips) {
+    const offset = frame0ByRank.get(clip.clipNum);
+    if (typeof offset !== "number" || !Number.isFinite(offset) || offset < 0 || offset >= clip.durationSec) {
+      throw new Error(
+        `Clip ${clip.clipNum} needs an explicit frame0 offset inside 0-${clip.durationSec.toFixed(2)}s. ` +
+        `Select it from the expression contact sheet and pass --frame0-offsets ${clip.clipNum}:SECONDS.`,
+      );
+    }
   }
 
   log.info(`Generating metadata for ${clips.length} clips via Claude API...`);
@@ -665,7 +700,7 @@ async function main(): Promise<void> {
         ? "Burnt Peanut funny gaming moment"
         : `Burnt Peanut ${game} funny moment`),
       frame0Hook,
-      frame0OffsetSec: existingFrame0ByRank.get(g.clipNum),
+      frame0OffsetSec: frame0ByRank.get(g.clipNum),
       ytDescription: g.ytDescription,
       ytTags: deduped,
       tiktokCaption: g.tiktokCaption,
@@ -675,6 +710,15 @@ async function main(): Promise<void> {
       hookPattern,
     };
   });
+
+  assertFrame0Package(
+    generatedClips.map((clip) => ({
+      rank: clip.clipNum,
+      frame0Hook: clip.frame0Hook,
+      frame0OffsetSec: clip.frame0OffsetSec,
+    })),
+    Object.fromEntries(clips.map((clip) => [clip.clipNum, clip.durationSec])),
+  );
 
   // Validate posting order — fill in any missing clip numbers
   const allNums = generatedClips.map((c) => c.clipNum);

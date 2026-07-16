@@ -75,6 +75,7 @@ test("frame-zero package requires an explicit in-range expression and deliberate
   assert.throws(() => assertFrame0Package(valid.slice(0, 1), clips), /missing metadata for rank 2/);
   assert.throws(() => assertFrame0Package([{ ...valid[0], frame0Hook: "TOO MANY WORDS ON THIS LINE / PAYOFF" }, valid[1]], clips), /three words per line/);
   assert.throws(() => assertFrame0Package([{ ...valid[0], frame0Hook: "NO DELIBERATE BREAK" }, valid[1]], clips), /explicit.*\//);
+  assert.throws(() => assertFrame0Package([{ ...valid[0], frame0OffsetSec: undefined }, valid[1]], clips), /outside clip duration/);
   assert.throws(() => assertFrame0Package([{ ...valid[0], frame0OffsetSec: 92.16 }, valid[1]], clips), /outside clip duration/);
 });
 

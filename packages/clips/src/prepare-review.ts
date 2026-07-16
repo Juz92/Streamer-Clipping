@@ -269,6 +269,7 @@ async function main(): Promise<void> {
   const reviewDir = join(streamDir, "review");
   const reviewShortsDir = join(reviewDir, "shorts");
   const reviewThumbsDir = join(reviewDir, "thumbnails");
+  const reviewQaDir = join(reviewDir, "qa");
   const warnings: string[] = [];
 
   if (!existsSync(shortsDir)) {
@@ -277,6 +278,7 @@ async function main(): Promise<void> {
 
   ensureDir(reviewShortsDir);
   ensureDir(reviewThumbsDir);
+  ensureDir(reviewQaDir);
 
   const qualityReport = readJson<{ suggestedRank?: number | null; picks?: PickQuality[] }>(join(streamDir, "pick-quality.json"), {});
   const qualityByRank = new Map((qualityReport.picks ?? []).map((pick) => [pick.rank, pick]));
@@ -325,6 +327,21 @@ async function main(): Promise<void> {
   copyIfExists(join(streamDir, "upload-metadata.json"), join(reviewDir, "upload-metadata.json"));
   copyIfExists(join(streamDir, "pick-quality.json"), join(reviewDir, "pick-quality.json"));
   copyIfExists(join(streamDir, "trim-results.json"), join(reviewDir, "trim-results.json"));
+
+  let qaEvidenceFiles = 0;
+  for (const file of ["gemini-reviews.json", "preflight-pre-upload.json", "qa-frame0-report.json"]) {
+    if (copyIfExists(join(streamDir, file), join(reviewQaDir, file))) qaEvidenceFiles++;
+  }
+  const expressionEvidenceDir = join(streamDir, "qa-frame0-research");
+  if (existsSync(expressionEvidenceDir)) {
+    for (const file of readdirSync(expressionEvidenceDir)) {
+      if (/\.(?:jpg|jpeg|png|json)$/i.test(file) && /candidate|contact-sheet/i.test(file)) {
+        copyFileSync(join(expressionEvidenceDir, file), join(reviewQaDir, file));
+        qaEvidenceFiles++;
+      }
+    }
+  }
+  if (qaEvidenceFiles === 0) warnings.push("QA/contact-sheet evidence missing");
 
   const explicitSuggestedRank = qualityReport.suggestedRank ?? null;
   const suggestedFromIncludedClip =

@@ -7,6 +7,7 @@
  *   npx tsx packages/clips/src/orchestrate.ts --stream <id>      # Resume from stream ID
  *   npx tsx packages/clips/src/orchestrate.ts --stream <id> --from analyze  # Resume from step
  *   npx tsx packages/clips/src/orchestrate.ts --top 5            # Render top N clips
+ *   npx tsx packages/clips/src/orchestrate.ts --frame0-offsets 1:84,2:29.5,3:27
  *   npx tsx packages/clips/src/orchestrate.ts --dry-run          # Show plan without executing
  */
 
@@ -50,6 +51,7 @@ interface OrchestrateArgs {
   prepareUploadPackage: boolean;
   allowScorerOnly: boolean;
   allowNoQa: boolean;
+  frame0Offsets?: string;
 }
 
 const runStartedAt = new Date().toISOString();
@@ -104,6 +106,12 @@ function parseArgs(): OrchestrateArgs {
       result.allowScorerOnly = true;
     } else if (args[i] === "--allow-no-qa") {
       result.allowNoQa = true;
+    } else if (args[i] === "--frame0-offsets" && args[i + 1]) {
+      const value = args[++i];
+      if (!/^\d+:\d+(?:\.\d+)?(?:,\d+:\d+(?:\.\d+)?)*$/.test(value)) {
+        throw new Error("--frame0-offsets must use rank:seconds pairs, e.g. 1:84,2:29.5");
+      }
+      result.frame0Offsets = value;
     }
   }
 
@@ -514,7 +522,8 @@ async function main(): Promise<void> {
 
   // Step 8: Generate upload metadata before render so frame-zero packaging is available.
   if (shouldRun(startIdx, "generate-metadata") && streamId) {
-    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}`;
+    const offsetArg = args.frame0Offsets ? ` --frame0-offsets ${args.frame0Offsets}` : "";
+    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}${offsetArg}`;
     if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${metaCmd}`);
     } else {
