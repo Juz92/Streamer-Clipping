@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertApprovedReviewWindows, blocksMissingQaReview, blocksMissingTranscriptReview, chooseReviewPacketClips, evaluateRenderedShorts, hasFirstThreeSecondHook, hasFreshPreUploadPass, publicationBlockers, selectPromotedEntries } from "../dist/quality-gates.js";
+import { assertApprovedReviewWindows, assertFrame0Package, blocksMissingQaReview, blocksMissingTranscriptReview, chooseReviewPacketClips, evaluateRenderedShorts, hasFirstThreeSecondHook, hasFreshPreUploadPass, publicationBlockers, selectPromotedEntries } from "../dist/quality-gates.js";
 
 test("first-3s hook passes on explicit flash or early signal, fails on slow setup", () => {
   assert.equal(hasFirstThreeSecondHook({ startSec: 100, text: "", flashDuration: 2, events: [] }), true);
@@ -63,6 +63,19 @@ test("rendering cannot change an approved A/B/C review window or its media durat
   assert.doesNotThrow(() => assertApprovedReviewWindows(selection, approved, { "a.mp4": 20.05 }));
   assert.throws(() => assertApprovedReviewWindows(selection, [{ ...approved[0], sourceStartSec: 12 }]), /window changed/);
   assert.throws(() => assertApprovedReviewWindows(selection, approved, { "a.mp4": 17 }), /media duration changed/);
+});
+
+test("frame-zero package requires an explicit in-range expression and deliberate short lines", () => {
+  const clips = { 1: 92.16, 2: 42.08 };
+  const valid = [
+    { rank: 1, frame0Hook: "FLUNG TO / THE MOON", frame0OffsetSec: 84 },
+    { rank: 2, frame0Hook: "A SEX / WHEEL?", frame0OffsetSec: 29.5 },
+  ];
+  assert.doesNotThrow(() => assertFrame0Package(valid, clips));
+  assert.throws(() => assertFrame0Package(valid.slice(0, 1), clips), /missing metadata for rank 2/);
+  assert.throws(() => assertFrame0Package([{ ...valid[0], frame0Hook: "TOO MANY WORDS ON THIS LINE / PAYOFF" }, valid[1]], clips), /three words per line/);
+  assert.throws(() => assertFrame0Package([{ ...valid[0], frame0Hook: "NO DELIBERATE BREAK" }, valid[1]], clips), /explicit.*\//);
+  assert.throws(() => assertFrame0Package([{ ...valid[0], frame0OffsetSec: 92.16 }, valid[1]], clips), /outside clip duration/);
 });
 
 test("API publication blocks until every promotion gate passes", () => {

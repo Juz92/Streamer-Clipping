@@ -23,7 +23,7 @@ export { blocksMissingQaReview, blocksMissingTranscriptReview } from "./quality-
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "notebooklm-review", "ground-candidates", "grounded-rank", "pick-quality", "trim", "story-gate", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "review-package", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "ground-candidates", "grounded-rank", "pick-quality", "trim", "story-gate", "whisper-captions", "generate-metadata", "render", "review", "thumbnails", "review-package", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface RunRecord {
@@ -512,7 +512,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 8: Render (produce 9:16 shorts)
+  // Step 8: Generate upload metadata before render so frame-zero packaging is available.
+  if (shouldRun(startIdx, "generate-metadata") && streamId) {
+    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}`;
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${metaCmd}`);
+    } else {
+      run(metaCmd, "Generate render-ready upload metadata");
+    }
+  }
+
+  // Step 9: Render (produce 9:16 shorts)
   if (shouldRun(startIdx, "render") && streamId) {
     const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --from-trimmer --all`;
 
@@ -582,24 +592,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 11: Generate AI upload metadata (titles, descriptions, tags, captions)
-  if (shouldRun(startIdx, "generate-metadata") && streamId) {
-    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}`;
 
-    if (args.dryRun) {
-      log.info(`[DRY RUN] Would run: ${metaCmd}`);
-    } else {
-      try {
-        run(metaCmd, "Generate upload metadata (Claude AI)");
-      } catch (e) {
-        warn(
-          `Metadata generation failed: ${(e as Error).message}. Upload.ts will error if upload-metadata.md is missing.`,
-        );
-      }
-    }
-  }
-
-  // Step 12: Prepare local private review folder.
   if (shouldRun(startIdx, "review-package") && streamId) {
     const packageCmd = `${tsx} ${base}/prepare-review.ts --stream ${streamId}`;
     if (args.dryRun) {

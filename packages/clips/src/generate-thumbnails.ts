@@ -188,6 +188,13 @@ function findRenderedShort(shortsDir: string, rank: number): string | null {
   return match ? join(shortsDir, match) : null;
 }
 
+function extractRenderedFrame0(shortPath: string, outPath: string): void {
+  execSync(
+    `ffmpeg -nostdin -i "${shortPath.replace(/\\/g, "/")}" -frames:v 1 -q:v 2 -y "${outPath.replace(/\\/g, "/")}"`,
+    { stdio: "pipe" },
+  );
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
   if (!args.streamId) {
@@ -202,10 +209,6 @@ async function main(): Promise<void> {
   }
 
   const manifest = loadManifest(args.streamId);
-  if (!manifest.videoPath || !existsSync(manifest.videoPath)) {
-    log.error("stream.mp4 missing — cannot extract frames");
-    process.exit(1);
-  }
 
   // Load audio levels for peak-frame detection
   const audioLevelsPath = join(streamDir, "audio_levels.txt");
@@ -214,8 +217,19 @@ async function main(): Promise<void> {
     log.info(`Loaded audio levels: ${audioSamples.length} samples`);
   }
 
-  const moments = loadMoments(streamDir);
   const shortsDir = join(streamDir, "shorts");
+  const renderedRanks = existsSync(shortsDir)
+    ? readdirSync(shortsDir)
+        .map((file) => Number(file.match(/^(\d+)-.*\.mp4$/)?.[1]))
+        .filter((rank) => Number.isFinite(rank))
+        .sort((a, b) => a - b)
+    : [];
+  const moments = renderedRanks.length > 0 ? [] : loadMoments(streamDir);
+  if (renderedRanks.length === 0 && (!manifest.videoPath || !existsSync(manifest.videoPath))) {
+    log.error("No rendered Shorts or source stream are available for thumbnails");
+    process.exit(1);
+  }
+  const ranks = renderedRanks.length > 0 ? renderedRanks : moments.map((_, index) => index + 1);
   const thumbsDir = join(shortsDir, "thumbnails");
   ensureDir(thumbsDir);
 
@@ -223,17 +237,30 @@ async function main(): Promise<void> {
   let skipped = 0;
   let failed = 0;
 
-  for (let i = 0; i < moments.length; i++) {
-    const rank = i + 1;
+  for (const rank of ranks) {
     if (args.clips && !args.clips.includes(rank)) continue;
 
-    const m = moments[i];
+    const m = moments[rank - 1] ?? {};
     const padded = String(rank).padStart(2, "0");
     const ytPath = join(thumbsDir, `yt-${padded}.jpg`);
     const ttPath = join(thumbsDir, `tt-${padded}.jpg`);
 
     if (!args.force && existsSync(ytPath) && existsSync(ttPath)) {
       skipped++;
+      continue;
+    }
+
+    const renderedShort = findRenderedShort(shortsDir, rank);
+    if (renderedShort) {
+      try {
+        extractRenderedFrame0(renderedShort, ytPath);
+        extractRenderedFrame0(renderedShort, ttPath);
+        generated++;
+        log.info(`[${rank}] exact rendered frame 0 → yt-${padded}.jpg + tt-${padded}.jpg`);
+      } catch (e) {
+        failed++;
+        log.error(`[${rank}] Frame-zero export failed: ${(e as Error).message}`);
+      }
       continue;
     }
 
@@ -299,8 +326,6 @@ async function main(): Promise<void> {
       log.error(`[${rank}] Thumb generation failed: ${(e as Error).message}`);
     }
 
-    // Touching rendered short path only for bookkeeping — don't require it.
-    void findRenderedShort(shortsDir, rank);
   }
 
   log.info(`\nThumbnails: ${generated} generated, ${skipped} skipped, ${failed} failed`);

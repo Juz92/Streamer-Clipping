@@ -108,6 +108,30 @@ export function assertApprovedReviewWindows(
   }
 }
 
+export function assertFrame0Package(
+  items: Array<{ rank?: number; frame0Hook?: string; frame0OffsetSec?: number }>,
+  clipDurations: Record<number, number>,
+): void {
+  const byRank = new Map(items.map((item) => [item.rank, item]));
+  for (const [rankText, duration] of Object.entries(clipDurations)) {
+    const rank = Number(rankText);
+    const item = byRank.get(rank);
+    if (!item) throw new Error(`Frame-zero package missing metadata for rank ${rank}`);
+    const hook = item.frame0Hook?.trim() ?? "";
+    if (!hook.includes("/")) {
+      throw new Error(`Frame-zero hook for rank ${rank} needs an explicit / line break`);
+    }
+    const lines = hook.split("/").map((line) => line.trim()).filter(Boolean);
+    if (lines.length !== 2 || lines.some((line) => line.split(/\s+/).length > 3)) {
+      throw new Error(`Frame-zero hook for rank ${rank} must use two lines with no more than three words per line`);
+    }
+    const offset = item.frame0OffsetSec;
+    if (typeof offset !== "number" || !Number.isFinite(offset) || offset < 0 || offset >= duration) {
+      throw new Error(`Frame-zero expression offset for rank ${rank} is outside clip duration ${duration.toFixed(2)}s`);
+    }
+  }
+}
+
 export function publicationBlockers(state: {
   promoted: boolean;
   privateStatus?: string;

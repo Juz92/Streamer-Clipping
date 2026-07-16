@@ -16,7 +16,7 @@ import type { LayoutMode } from "./lib/layout.js";
 import { planMotion, buildZoompanFilter, type MotionPlan } from "./lib/motion.js";
 import { insertEmojis, CAPTION_EMOJI_FONT } from "./lib/caption-emoji.js";
 import { loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
-import { assertApprovedReviewWindows, selectPromotedEntries } from "./quality-gates.js";
+import { assertApprovedReviewWindows, assertFrame0Package, selectPromotedEntries } from "./quality-gates.js";
 
 const log = createLogger("render-fast");
 
@@ -333,56 +333,24 @@ function parseHookTexts(streamDir: string): Map<number, string> {
   return hooks;
 }
 
-/**
- * Parse short, thumbnail-safe frame0 hook copy. Prefer upload-metadata.json
- * items[].frame0Hook, fall back to **Frame0 Hook:** in upload-metadata.md,
- * then finally the regular title hook.
- */
-function parseFrame0Hooks(streamDir: string): Map<number, string> {
-  const hooks = new Map<number, string>();
+interface Frame0MetadataItem {
+  rank?: number;
+  clipNum?: number;
+  frame0Hook?: string;
+  frame0OffsetSec?: number;
+}
+
+function loadFrame0MetadataItems(streamDir: string): Frame0MetadataItem[] {
   const jsonPath = join(streamDir, "upload-metadata.json");
+  if (!existsSync(jsonPath)) throw new Error("upload-metadata.json is required before rendering");
+  const parsed = JSON.parse(readFileSync(jsonPath, "utf-8")) as { items?: Frame0MetadataItem[] };
+  return parsed.items ?? [];
+}
 
-  if (existsSync(jsonPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(jsonPath, "utf-8")) as {
-        items?: Array<{ rank?: number; clipNum?: number; frame0Hook?: string }>;
-      };
-      for (const item of parsed.items ?? []) {
-        const rank = item.rank ?? item.clipNum;
-        const hook = item.frame0Hook?.trim();
-        if (rank && hook) hooks.set(rank, hook.replace(/[^\x20-\x7E]/g, "").trim());
-      }
-    } catch {
-      // Keep falling back to markdown/title hooks.
-    }
-  }
-
-  const mdPath = join(streamDir, "upload-metadata.md");
-  if (existsSync(mdPath)) {
-    const content = readFileSync(mdPath, "utf-8");
-    const sectionRegex = /^## (\d+)\s*--/gm;
-    let match: RegExpExecArray | null;
-    const sectionStarts: Array<{ rank: number; start: number }> = [];
-    while ((match = sectionRegex.exec(content)) !== null) {
-      sectionStarts.push({ rank: parseInt(match[1], 10), start: match.index });
-    }
-
-    for (let i = 0; i < sectionStarts.length; i++) {
-      const start = sectionStarts[i].start;
-      const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].start : content.length;
-      const section = content.slice(start, end);
-      const hookMatch = section.match(/\*\*Frame0 Hook:\*\*\s*(.+)/i);
-      if (hookMatch && !hooks.has(sectionStarts[i].rank)) {
-        hooks.set(sectionStarts[i].rank, hookMatch[1].trim().replace(/[^\x20-\x7E]/g, "").trim());
-      }
-    }
-  }
-
-  parseHookTexts(streamDir).forEach((title, rank) => {
-    if (!hooks.has(rank)) hooks.set(rank, title);
-  });
-
-  return hooks;
+function getFrame0Spec(items: Frame0MetadataItem[], rank: number, duration: number): { hookText: string; offsetSec: number } {
+  assertFrame0Package(items, { [rank]: duration });
+  const item = items.find((candidate) => (candidate.rank ?? candidate.clipNum) === rank)!;
+  return { hookText: item.frame0Hook!.trim(), offsetSec: item.frame0OffsetSec! };
 }
 
 /**
@@ -563,17 +531,23 @@ function buildFrame0HookFilters(hookText: string): string {
   const [line1, line2] = splitHookText(hookText.toUpperCase());
   const filters: string[] = [];
   const font = "C\\:/Windows/Fonts/impact.ttf";
+  const bannerY = 1220;
+  const bannerH = 340;
 
+  // Keep the full hook inside the centered 4:5 crop YouTube may use for
+  // vertical-video thumbnails (roughly y=285..1635 on a 1080x1920 frame).
+  filters.push(`drawbox=y=${bannerY}:w=1080:h=${bannerH}:color=black@0.76:t=fill`);
+  filters.push(`drawbox=y=${bannerY}:w=1080:h=6:color=yellow@0.95:t=fill`);
   if (line2) {
     filters.push(
-      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=82:fontcolor=white:borderw=7:bordercolor=black:x=(w-text_w)/2:y=1518`,
+      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=80:fontcolor=white:borderw=7:bordercolor=black:x=(w-text_w)/2:y=1270`,
     );
     filters.push(
-      `drawtext=text='${escapeDrawtext(line2)}':fontfile='${font}':fontsize=98:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1628`,
+      `drawtext=text='${escapeDrawtext(line2)}':fontfile='${font}':fontsize=100:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1390`,
     );
   } else {
     filters.push(
-      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=92:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1600`,
+      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=96:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1345`,
     );
   }
 
@@ -721,11 +695,17 @@ function renderClipFfmpeg(
     duration: number;
     hookText?: string;
     frame0HookText?: string;
+    frame0OffsetSec?: number;
+    frame0SourcePath?: string;
+    frame0SourceDuration?: number;
     frame0Avatar?: Region;
     motionPlan?: MotionPlan | null;
   },
 ): void {
   const startTime = Date.now();
+  assertFrame0Package([
+    { rank: 1, frame0Hook: options.frame0HookText, frame0OffsetSec: options.frame0OffsetSec },
+  ], { 1: options.frame0SourceDuration ?? options.duration });
   const flashDur = options.flashDuration ?? 2;
 
   const motionFilter = options.motionPlan
@@ -788,16 +768,19 @@ function renderClipFfmpeg(
   }
 
   if (options.frame0HookText) {
+    if (typeof options.frame0OffsetSec !== "number") {
+      throw new Error("Validated frame0OffsetSec is required when rendering a frame-zero hook");
+    }
     const frame0FilterPath = outputPath + ".frame0.fc.txt";
     const frame0Filter =
-      `[1:v]select='eq(n,0)',${buildFrame0AvatarFreeze(options.frame0HookText, options.frame0Avatar)},loop=loop=1:size=1:start=0,trim=duration=0.034,setpts=PTS-STARTPTS[f0];` +
+      `[1:v]select='eq(n,0)',${buildFrame0AvatarFreeze(options.frame0HookText, options.frame0Avatar)},trim=end_frame=1,setpts=PTS-STARTPTS[f0];` +
       `[0:v]trim=start_frame=1,setpts=PTS-STARTPTS[rest];` +
       `[f0][rest]concat=n=2:v=1:a=0[final]`;
     writeFileSync(frame0FilterPath, frame0Filter, "utf-8");
     const frame0Cmd = [
       `ffmpeg`,
       `-i "${bodyOutputPath}"`,
-      `-i "${clipPath}"`,
+      `-ss ${options.frame0OffsetSec.toFixed(3)} -i "${options.frame0SourcePath ?? clipPath}"`,
       `-filter_complex_script "${frame0FilterPath}"`,
       `-map "[final]:v"`,
       `-map "0:a?"`,
@@ -923,13 +906,11 @@ async function renderFromTrimmer(
 
   // Load hook texts
   const hookTexts = parseHookTexts(streamDir);
-  const frame0Hooks = parseFrame0Hooks(streamDir);
+  const frame0Items = loadFrame0MetadataItems(streamDir);
   if (hookTexts.size > 0) {
     log.info(`Loaded ${hookTexts.size} hook texts from upload-metadata.md`);
   }
-  if (frame0Hooks.size > 0) {
-    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
-  }
+  log.info(`Loaded ${frame0Items.length} frame0 specs from upload metadata`);
 
   const summary: Array<{ file: string; duration: number; layout: string }> = [];
 
@@ -1022,15 +1003,15 @@ async function renderFromTrimmer(
     // Step 4: Render 9:16 short
     const shortPath = join(shortsDir, clip.clipFile);
     const hookText = hookTexts.get(rank);
-    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
     if (hookText) {
       log.info(`  Hook: "${hookText}"`);
     }
-    if (frame0HookText) {
-      log.info(`  Frame0 hook: "${frame0HookText}"`);
-    }
 
     const assembledDuration = getVideoDuration(assembledPath);
+    const frame0SourceDuration = getVideoDuration(rawClipPath);
+    const frame0Spec = getFrame0Spec(frame0Items, rank, frame0SourceDuration);
+    const frame0HookText = frame0Spec.hookText;
+    log.info(`  Frame0 hook: "${frame0HookText}"`);
     log.info(`  Assembled clip duration: ${assembledDuration.toFixed(2)}s`);
 
     const motionPlan = noMotion
@@ -1057,6 +1038,9 @@ async function renderFromTrimmer(
       duration: assembledDuration,
       hookText,
       frame0HookText,
+      frame0OffsetSec: frame0Spec.offsetSec,
+      frame0SourcePath: rawClipPath,
+      frame0SourceDuration,
       frame0Avatar,
       motionPlan,
     });
@@ -1125,10 +1109,8 @@ async function renderDirect(
   log.info(`Rendering ${clipsToRender.length} clips directly from raw-clips/`);
 
   const hookTexts = parseHookTexts(streamDir);
-  const frame0Hooks = parseFrame0Hooks(streamDir);
-  if (frame0Hooks.size > 0) {
-    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
-  }
+  const frame0Items = loadFrame0MetadataItems(streamDir);
+  log.info(`Loaded ${frame0Items.length} frame0 specs from upload metadata`);
 
   const summary: Array<{ file: string; duration: number; layout: string }> = [];
 
@@ -1193,7 +1175,8 @@ async function renderDirect(
     const clipDuration = getVideoDuration(rawClipPath);
     const shortPath = join(shortsDir, clip.clipFile);
     const hookText = hookTexts.get(rank);
-    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
+    const frame0Spec = getFrame0Spec(frame0Items, rank, clipDuration);
+    const frame0HookText = frame0Spec.hookText;
     if (hookText) log.info(`  Hook: "${hookText}"`);
     if (frame0HookText) log.info(`  Frame0 hook: "${frame0HookText}"`);
 
@@ -1221,6 +1204,7 @@ async function renderDirect(
       duration: clipDuration,
       hookText,
       frame0HookText,
+      frame0OffsetSec: frame0Spec.offsetSec,
       frame0Avatar,
       motionPlan,
     });
@@ -1450,13 +1434,11 @@ async function main(): Promise<void> {
 
   // Parse upload-metadata.md/json for hook texts
   const hookTexts = parseHookTexts(streamDir);
-  const frame0Hooks = parseFrame0Hooks(streamDir);
+  const frame0Items = loadFrame0MetadataItems(streamDir);
   if (hookTexts.size > 0) {
     log.info(`Loaded ${hookTexts.size} hook texts from upload-metadata.md`);
   }
-  if (frame0Hooks.size > 0) {
-    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
-  }
+  log.info(`Loaded ${frame0Items.length} frame0 specs from upload metadata`);
 
   const summary: Array<{
     file: string;
@@ -1576,7 +1558,8 @@ async function main(): Promise<void> {
     // Get hook text: CLI override > upload-metadata > unified-moments.json > none
     const unifiedHook = unifiedEntries?.[idx]?.hookText;
     const hookText = (args["hook-text"] as string) || hookTexts.get(rank) || unifiedHook || undefined;
-    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
+    const frame0Spec = getFrame0Spec(frame0Items, rank, clipDuration);
+    const frame0HookText = frame0Spec.hookText;
     if (hookText) {
       log.info(`  Hook: "${hookText}"`);
     } else {
@@ -1612,6 +1595,7 @@ async function main(): Promise<void> {
       duration: clipDuration,
       hookText,
       frame0HookText,
+      frame0OffsetSec: frame0Spec.offsetSec,
       motionPlan,
     });
 
