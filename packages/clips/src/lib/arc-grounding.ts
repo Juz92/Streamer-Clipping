@@ -301,14 +301,19 @@ export function localizeArcFromEvidence(
       && cue.startSec >= payoffCue!.startSec - 1.5
       && cue.startSec <= candidate.endSec,
     )
-    .sort((a, b) => Math.abs(a.endSec - candidate.endSec) - Math.abs(b.endSec - candidate.endSec))[0];
+    .sort((a, b) => {
+      const aContainsCut = a.startSec <= candidate.endSec && a.endSec >= candidate.endSec;
+      const bContainsCut = b.startSec <= candidate.endSec && b.endSec >= candidate.endSec;
+      if (aContainsCut !== bContainsCut) return aContainsCut ? -1 : 1;
+      return Math.abs(a.endSec - candidate.endSec) - Math.abs(b.endSec - candidate.endSec);
+    })[0];
   const reactionEvent = [...reactions]
     .filter((event) =>
       event.timestampSec >= payoffCue!.startSec
       && event.timestampSec <= candidate.endSec,
     )
     .sort((a, b) => Math.abs(a.timestampSec - candidate.endSec) - Math.abs(b.timestampSec - candidate.endSec))[0];
-  const reactionEndSec = Math.min(candidate.endSec, Math.max(
+  const reactionEndSec = Math.min(candidate.endSec + 30, Math.max(
     payoffCue.endSec,
     reactionCue?.endSec ?? payoffCue.endSec,
     reactionEvent ? reactionEvent.timestampSec + 2 : payoffCue.endSec,

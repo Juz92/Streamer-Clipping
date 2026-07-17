@@ -57,7 +57,8 @@ export interface ComputeAutoTrimOptions {
 }
 
 /* ── Constants (tuned for viral Shorts) ── */
-const DEFAULT_MAX_DRIFT = 5;           // was 3 — natural ends often 4-5s after signal
+const DEFAULT_MAX_DRIFT = 5;           // start boundaries should stay close to the grounded setup
+const DEFAULT_END_MAX_DRIFT = 12;      // active sentences often finish 6-12s after the signal
 const DEFAULT_MIN_SILENCE = 600;       // was 300 — 600ms catches true pauses, not breaths
 const FLASH_VAR_MIN = 1.0;             // quick reaction flashes
 const FLASH_VAR_MAX = 4.0;             // visual gag / multi-word punchline
@@ -268,11 +269,15 @@ export function snapEndBoundaryEnhanced(
   if (lastPeakSec != null) {
     const lastPeakMs = lastPeakSec * 1000;
     // Find the word that ends closest to but after the peak
-    const resolutionWords = words.filter((w) =>
-      w.endMs >= Math.max(lastPeakMs, targetMs)
-      && w.endMs <= lastPeakMs + 1500
-      && w.endMs <= hi,
-    );
+    const resolutionWords = words.filter((w, index) => {
+      const next = words[index + 1];
+      const naturalStop = isRealSentenceEnd(w.word)
+        || (next != null && next.startMs - w.endMs >= minSilenceMs);
+      return naturalStop
+        && w.endMs >= Math.max(lastPeakMs, targetMs)
+        && w.endMs <= lastPeakMs + 1500
+        && w.endMs <= hi;
+    });
     if (resolutionWords.length > 0) {
       resolutionWords.sort((a, b) => Math.abs(a.endMs - lastPeakMs) - Math.abs(b.endMs - lastPeakMs));
       return { sec: resolutionWords[0].endMs / 1000, source: "emotional-resolution", reason: "natural-completion" };
@@ -536,15 +541,16 @@ export function computeAutoTrimEnhanced(opts: ComputeAutoTrimOptions): PaddedWin
   let endSec = contentTargetEnd;
   let endSource: PaddedWindow["notes"]["endSnap"] = "signal";
   let endReason: PaddedWindow["notes"]["endReason"] = "signal";
+  const endMaxDriftSec = opts.maxDriftSec ?? DEFAULT_END_MAX_DRIFT;
   const speakerEnd = availableTurns.length
-    ? snapToSpeakerEnd(availableTurns, contentTargetEnd, maxDriftSec)
+    ? snapToSpeakerEnd(availableTurns, contentTargetEnd, endMaxDriftSec)
     : null;
   if (speakerEnd != null) {
     endSec = speakerEnd;
     endSource = "speaker";
     endReason = "natural-completion";
   } else {
-    const fallback = snapEndBoundaryEnhanced(words, contentTargetEnd, maxDriftSec, minSilenceMs, lastPeakSec);
+    const fallback = snapEndBoundaryEnhanced(words, contentTargetEnd, endMaxDriftSec, minSilenceMs, lastPeakSec);
     endSec = fallback.sec;
     endSource = fallback.source;
     endReason = fallback.reason;
@@ -562,7 +568,7 @@ export function computeAutoTrimEnhanced(opts: ComputeAutoTrimOptions): PaddedWin
 
   // Dead-air trim
   const trimmed = trimDeadAir(contentEnd, contentStart, lastPeakSec, 8);
-  if (trimmed.end < contentEnd && trimmed.end > contentStart + 5) {
+  if (endReason !== "natural-completion" && trimmed.end < contentEnd && trimmed.end > contentStart + 5) {
     contentEnd = trimmed.end;
     endReason = trimmed.reason;
   }

@@ -214,6 +214,16 @@ test("source heuristic anchors outer beats to the candidate semantic envelope", 
   assert.equal(proposal.reactionEndSec, 126);
 });
 
+test("source heuristic may finish a transcript cue that crosses the candidate end", () => {
+  const proposal = localizeArcFromEvidence({
+    candidate: { ...candidate, endSec: 123 },
+    transcript,
+    reactions,
+  });
+
+  assert.equal(proposal.reactionEndSec, 126);
+});
+
 test("source heuristic excludes next-topic evidence beyond the candidate envelope", () => {
   const boundedCandidate = { ...candidate, startSec: 100, endSec: 126 };
   const boundedTranscript = [

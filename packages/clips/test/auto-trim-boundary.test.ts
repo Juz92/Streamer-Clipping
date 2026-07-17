@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  computeAutoTrimEnhanced,
   snapEndBoundaryEnhanced,
   snapStartBoundaryEnhanced,
   snapToSpeakerEnd,
@@ -48,4 +49,28 @@ test("end snapping keeps an authoritative end already after punctuation", () => 
 
   assert.equal(snapped.sec, 10);
   assert.equal(snapped.source, "punctuation");
+});
+
+test("auto trim follows active speech to a natural stop instead of cutting at the loud peak", () => {
+  const words = [
+    { word: "we", startMs: 9_800, endMs: 10_400 },
+    { word: "are", startMs: 10_500, endMs: 11_200 },
+    { word: "still", startMs: 11_300, endMs: 12_100 },
+    { word: "finishing", startMs: 12_200, endMs: 13_300 },
+    { word: "the", startMs: 13_400, endMs: 14_000 },
+    { word: "whole", startMs: 14_100, endMs: 15_100 },
+    { word: "sentence", startMs: 15_200, endMs: 16_400 },
+    { word: "properly.", startMs: 16_500, endMs: 18_000 },
+  ];
+
+  const result = computeAutoTrimEnhanced({
+    paddedDurationSec: 30,
+    signalStartInClipSec: 0,
+    signalEndInClipSec: 10,
+    whisperWords: words,
+    audioSamples: [{ timeSec: 10, rmsLevel: -10 }],
+  });
+
+  assert.equal(result.contentEnd, 18);
+  assert.equal(result.notes.endSnap, "punctuation");
 });

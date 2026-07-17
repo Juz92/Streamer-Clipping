@@ -2,12 +2,13 @@ import type { WhisperWord } from "./whisper-captions.js";
 import { snapEndBoundaryEnhanced } from "./enhanced-auto-trim.js";
 import type { BeatMap, VisualProof } from "./arc-grounding.js";
 
-export const BOUNDARY_REVIEW_PROMPT_VERSION = "autonomous-boundary-v6";
+export const BOUNDARY_REVIEW_PROMPT_VERSION = "autonomous-boundary-v7";
 const SUBJECT_ROLES = ["actor", "recipient", "observer"] as const;
 type SubjectRole = (typeof SUBJECT_ROLES)[number];
 const MIN_CONFIDENCE = 0.75;
 const EDGE_GUARD_SEC = 1;
 const MAX_END_EXTENSION_SEC = 30;
+const SPEECH_END_LOOKAHEAD_SEC = 12;
 const ENDPOINT_TYPES = ["minimum", "natural", "extended"] as const;
 type EndpointType = (typeof ENDPOINT_TYPES)[number];
 
@@ -255,19 +256,16 @@ export function buildAutonomousVisualProof(params: {
   const snapped = snapEndBoundaryEnhanced(
     params.words,
     selectedAbsolute,
-    3,
+    SPEECH_END_LOOKAHEAD_SEC,
     600,
     absolute[4],
   ).sec;
-  const reactionEndSec = round(Math.max(selectedAbsolute, snapped));
+  const snappedReactionEndSec = round(Math.max(selectedAbsolute, snapped));
   const reviewEndSec = candidate.previewStartSec + params.reviewDurationSec;
-  if (
-    reactionEndSec >= reviewEndSec - EDGE_GUARD_SEC
-    || reactionEndSec >= nextTopicAbsolute
-    || reactionEndSec > candidate.endSec + MAX_END_EXTENSION_SEC
-  ) {
-    return base("speech-snapped endpoint violates the review envelope");
-  }
+  const snapIsSafe = snappedReactionEndSec < reviewEndSec - EDGE_GUARD_SEC
+    && snappedReactionEndSec < nextTopicAbsolute
+    && snappedReactionEndSec <= candidate.endSec + MAX_END_EXTENSION_SEC;
+  const reactionEndSec = snapIsSafe ? snappedReactionEndSec : selectedAbsolute;
 
   const beats: BeatMap = {
     setupStartSec: absolute[0],

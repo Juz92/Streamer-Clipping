@@ -191,7 +191,7 @@ async function main() {
     mkdirSync(paddedClipsDir, { recursive: true });
     serveDir = paddedClipsDir;
 
-    const PAD_SEC = 10;
+    const PAD_SEC = 15;
     const streamPath = manifest.videoPath.replace(/\\/g, "/");
 
     for (let i = 0; i < groundedNlmMoments.length; i++) {
@@ -693,7 +693,7 @@ interface PickQualityEntry extends GroundedQuality {
   reasonSuggested?: string;
 }
 
-const PAD_SEC = 10;
+const PAD_SEC = 15;
 
 function inferArchetypeFromCategories(categories: string[]): string {
   if (categories.includes("friend-roast") || categories.includes("roast")) return "roast";
