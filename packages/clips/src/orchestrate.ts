@@ -533,7 +533,7 @@ async function main(): Promise<void> {
 
   // Step 9: Render (produce 9:16 shorts)
   if (shouldRun(startIdx, "render") && streamId) {
-    const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --from-trimmer --all`;
+    const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --direct`;
 
     if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${renderCmd}`);

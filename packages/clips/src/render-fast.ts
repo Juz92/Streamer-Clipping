@@ -1098,8 +1098,22 @@ async function renderDirect(
   const rawClipsDir = join(streamDir, "raw-clips");
   enforceApprovedReviewWindows(streamDir, trimResults.approved, rawClipsDir);
   const whisperDir = join(streamDir, "whisper-captions");
+  const approvedCaptionsDir = join(streamDir, "approved-captions");
   const shortsDir = join(streamDir, "shorts");
   ensureDir(shortsDir);
+
+  let sourceCaptionWords: ReturnType<typeof vttToWordTimestamps> | null = null;
+  if (!noCaptions && streamId) {
+    try {
+      const manifest = loadManifest(streamId);
+      if (manifest.subtitlePath && existsSync(manifest.subtitlePath)) {
+        sourceCaptionWords = vttToWordTimestamps(parseVtt(manifest.subtitlePath));
+        log.info(`Loaded ${sourceCaptionWords.length} full-context VTT words`);
+      }
+    } catch (error) {
+      log.warn(`Could not load source VTT: ${(error as Error).message}`);
+    }
+  }
 
   // Real clips only (contentEnd < 9000), rank <= 24, optionally filtered by rank
   const clipsToRender = promotedTrimEntries(streamDir, trimResults.approved)
@@ -1144,30 +1158,50 @@ async function renderDirect(
     const frame0Avatar = scaleRegionForSource(defaultFrame0AvatarRegion(streamId, avatarDefault), sourceDims.width, sourceDims.height);
     log.info(`  Layout: ${mode} (${sourceDims.width}x${sourceDims.height} source)`);
 
-    // Captions start after the frame0/hook beat. The legacy body hook banner is
-    // disabled by default; don't re-enable it for v8 style renders.
-    const HOOK_SECS = 2;
+    // The approved raw clip has no synthetic hook segment. Any remaining flash
+    // comes from trim metadata; frame-zero art replaces one decoded frame only.
+    const HOOK_SECS = remainingFlash;
 
     let assFilePath: string | null = null;
     let contentWords: WhisperWord[] = [];
     {
-      const whisperWords = loadWhisperCaptions(whisperDir, clip.clipFile);
-      if (whisperWords && whisperWords.length > 0) {
-        const flashMs = HOOK_SECS * 1000;
-        contentWords = whisperWords.filter((w) => w.startMs >= flashMs);
-        if (!noCaptions) {
-          if (contentWords.length > 0) {
-            let chunks = generateCaptionChunks(contentWords);
-            if (!noEmojis) chunks = insertEmojis(chunks);
-            assFilePath = join(shortsDir, `karaoke-${padded}.ass`);
-            writeKaraokeAss(chunks, mode, assFilePath, noEmojis ? "Arial" : CAPTION_EMOJI_FONT);
-            log.info(`  Captions: ${contentWords.length} words → ${chunks.length} chunks${noEmojis ? "" : " (emoji pass)"}`);
-          } else {
-            log.warn(`  No caption words after flash portion for clip #${rank}`);
-          }
+      const approvedWords = loadWhisperCaptions(approvedCaptionsDir, clip.clipFile);
+      if (approvedWords && approvedWords.length > 0) {
+        contentWords = approvedWords;
+        log.info(`  Caption source: curated transcript (${contentWords.length} words)`);
+      }
+
+      if (
+        contentWords.length === 0 &&
+        sourceCaptionWords &&
+        typeof clip.sourceStartSec === "number" &&
+        typeof clip.sourceEndSec === "number"
+      ) {
+        contentWords = filterByTimeRange(sourceCaptionWords, clip.sourceStartSec, clip.sourceEndSec);
+        if (contentWords.length > 0) {
+          log.info(`  Caption source: full-context VTT (${contentWords.length} words)`);
         }
-      } else if (!noCaptions) {
-        log.warn(`  No whisper captions for clip #${rank}`);
+      }
+
+      if (contentWords.length === 0) {
+        const whisperWords = loadWhisperCaptions(whisperDir, clip.clipFile);
+        if (whisperWords && whisperWords.length > 0) {
+          const flashMs = HOOK_SECS * 1000;
+          contentWords = whisperWords.filter((w) => w.startMs >= flashMs);
+          log.info(`  Caption source: clip Whisper fallback (${contentWords.length} words)`);
+        }
+      }
+
+      if (!noCaptions) {
+        if (contentWords.length > 0) {
+          let chunks = generateCaptionChunks(contentWords);
+          if (!noEmojis) chunks = insertEmojis(chunks);
+          assFilePath = join(shortsDir, `karaoke-${padded}.ass`);
+          writeKaraokeAss(chunks, mode, assFilePath, noEmojis ? "Arial" : CAPTION_EMOJI_FONT);
+          log.info(`  Captions: ${contentWords.length} words → ${chunks.length} chunks${noEmojis ? "" : " (emoji pass)"}`);
+        } else {
+          log.warn(`  No caption words for clip #${rank}`);
+        }
       }
     }
 

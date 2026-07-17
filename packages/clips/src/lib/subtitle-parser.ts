@@ -58,9 +58,15 @@ export function parseVtt(filePath: string): VttCue[] {
     const textLines: string[] = [];
     while (i < lines.length) {
       const tl = lines[i];
-      if (tl.trim() === "") break;
       if (tl.includes("-->")) break;
       if (tl.startsWith("NOTE")) break;
+      // YouTube sometimes emits a blank spacer immediately after the timing
+      // line, before the actual caption text. Treat blank lines as spacing;
+      // the next timing line is the reliable cue boundary.
+      if (tl.trim() === "") {
+        i++;
+        continue;
+      }
       textLines.push(tl);
       i++;
     }
@@ -85,7 +91,7 @@ export function parseVtt(filePath: string): VttCue[] {
         s.replace(/<[^>]+>/g, "").replace(/&\w+;/g, " ").replace(/\s+/g, " ").trim();
       const cleanPrev = clean(prevText);
       const cleanCurr = clean(text);
-      if (cleanCurr === cleanPrev || cleanPrev.includes(cleanCurr)) {
+      if (cleanCurr === cleanPrev) {
         continue;
       }
     }
