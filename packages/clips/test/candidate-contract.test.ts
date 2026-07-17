@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -73,7 +73,7 @@ test("grounded promoted loader rejects stale source artifacts but not later priv
     writeFileSync(groundingPath, "{}", "utf-8");
     writeFileSync(join(streamDir, "recall-union.json"), "[]", "utf-8");
     writeFileSync(join(streamDir, "grounded-ranking.json"), JSON.stringify({
-      gate: { status: "PASS" },
+      gate: { status: "PASS", labelSource: "private-review" },
       promoted: [candidate],
     }), "utf-8");
     writeFileSync(join(streamDir, "grounded-ranked-moments.json"), JSON.stringify([candidate]), "utf-8");
@@ -84,6 +84,68 @@ test("grounded promoted loader rejects stale source artifacts but not later priv
     const future = new Date(Date.now() + 5_000);
     utimesSync(groundingPath, future, future);
     assert.throws(() => loadValidatedGroundedPromoted(streamDir), /stale/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit private selection proceeds without rewriting automated ranking evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "private-selection-"));
+  try {
+    const candidate = {
+      candidateId: "job-a:recall-a",
+      jobId: "job-a",
+      momentId: "recall-a",
+      startSec: 10,
+      endSec: 30,
+      description: "Complete reviewed arc",
+      categories: ["peanut-bits"],
+      recallRoutes: ["semantic:humor"],
+    };
+    writeFileSync(join(root, "recall-union.json"), JSON.stringify([candidate]), "utf-8");
+    writeFileSync(join(root, "arc-grounding.json"), JSON.stringify({
+      results: [{ candidateId: candidate.candidateId, status: "GROUNDED" }],
+    }), "utf-8");
+    writeFileSync(join(root, "grounded-ranking.json"), JSON.stringify({
+      gate: { status: "WAITING_FOR_LABELS", labelSource: "private-review" },
+      promoted: [],
+    }), "utf-8");
+    writeFileSync(join(root, "private-abc-selection.json"), JSON.stringify({
+      decision: "liked all",
+      candidates: [{
+        candidateId: candidate.candidateId,
+        startSec: 8,
+        endSec: 34,
+        beats: { setupStartSec: 8, reactionEndSec: 34 },
+      }],
+    }), "utf-8");
+
+    assert.deepEqual(loadValidatedGroundedPromoted(root), [{
+      ...candidate,
+      startSec: 8,
+      endSec: 34,
+      beats: { setupStartSec: 8, reactionEndSec: 34 },
+    }]);
+    const report = JSON.parse(readFileSync(join(root, "grounded-ranking.json"), "utf-8"));
+    assert.equal(report.gate.status, "WAITING_FOR_LABELS");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("automated ranking rejects a manual label source masquerading as PASS", () => {
+  const root = mkdtempSync(join(tmpdir(), "manual-pass-"));
+  try {
+    const candidate = { candidateId: "job-a:recall-a", momentId: "recall-a" };
+    writeFileSync(join(root, "recall-union.json"), "[]", "utf-8");
+    writeFileSync(join(root, "arc-grounding.json"), "{}", "utf-8");
+    writeFileSync(join(root, "grounded-ranking.json"), JSON.stringify({
+      gate: { status: "PASS", labelSource: "private-abc" },
+      promoted: [candidate],
+    }), "utf-8");
+    writeFileSync(join(root, "grounded-ranked-moments.json"), JSON.stringify([candidate]), "utf-8");
+
+    assert.throws(() => loadValidatedGroundedPromoted(root), /label source/i);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
