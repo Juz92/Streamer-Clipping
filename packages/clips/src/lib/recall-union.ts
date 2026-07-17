@@ -91,17 +91,34 @@ export function identifySemanticRecallCandidates<T extends SemanticRecallCandida
   jobId: string,
   candidates: T[],
 ): Array<T & CandidateIdentity & { recallRoutes: string[] }> {
-  const identified = candidates.map((candidate) => {
+  const momentIds = candidates.map(makeSemanticRecallMomentId);
+  const generatedGroups = new Map<string, number[]>();
+  candidates.forEach((candidate, index) => {
+    if (candidate.momentId?.trim() || candidate.id?.trim()) return;
+    const group = generatedGroups.get(momentIds[index]) ?? [];
+    group.push(index);
+    generatedGroups.set(momentIds[index], group);
+  });
+  for (const [baseId, indices] of generatedGroups) {
+    if (indices.length < 2) continue;
+    indices
+      .sort((a, b) => candidates[a].startSec - candidates[b].startSec || candidates[a].endSec - candidates[b].endSec)
+      .forEach((candidateIndex, occurrenceIndex) => {
+        if (occurrenceIndex > 0) momentIds[candidateIndex] = `${baseId}-occ${occurrenceIndex + 1}`;
+      });
+  }
+
+  const identified = candidates.map((candidate, index) => {
     const recallRoutes = [...new Set(candidate.sourceQueries?.length ? candidate.sourceQueries : [candidate.sourceQuery])].sort();
     return {
       ...candidate,
-      ...canonicalizeMoment(jobId, { momentId: makeSemanticRecallMomentId(candidate), candidateId: candidate.candidateId }),
+      ...canonicalizeMoment(jobId, { momentId: momentIds[index], candidateId: candidate.candidateId }),
       recallRoutes,
     };
   });
   const ids = new Set(identified.map((candidate) => candidate.candidateId));
   if (ids.size !== identified.length) {
-    throw new Error("Semantic recall produced duplicate content identities");
+    throw new Error("Semantic recall produced duplicate explicit content identities");
   }
   return identified;
 }

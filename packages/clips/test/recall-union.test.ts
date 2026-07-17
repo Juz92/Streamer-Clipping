@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildRecallUnion,
+  identifySemanticRecallCandidates,
   makeSemanticRecallMomentId,
   mergeRecallAnchors,
   persistRecallUnion,
@@ -94,6 +95,36 @@ test("semantic identity does not depend on mutable boundaries", () => {
   assert.equal(
     makeSemanticRecallMomentId(candidate),
     makeSemanticRecallMomentId({ ...candidate, startSec: 90, endSec: 155 }),
+  );
+});
+
+test("distant repeated nominations get stable occurrence identities instead of colliding", () => {
+  const repeated = [{
+    startSec: 100,
+    endSec: 140,
+    hook: "The same recurring bit",
+    quote: "The same payoff",
+    categories: ["peanut-bits"],
+    sourceQuery: "humor",
+  }, {
+    startSec: 5000,
+    endSec: 5040,
+    hook: "The same recurring bit",
+    quote: "The same payoff",
+    categories: ["peanut-bits"],
+    sourceQuery: "humor",
+  }];
+  const identified = identifySemanticRecallCandidates("job-repeat", repeated);
+  const corrected = identifySemanticRecallCandidates("job-repeat", [
+    { ...repeated[0], startSec: 95, endSec: 145 },
+    { ...repeated[1], startSec: 4995, endSec: 5045 },
+  ]);
+
+  assert.equal(new Set(identified.map((candidate) => candidate.candidateId)).size, 2);
+  assert.match(identified[1].momentId, /-occ2$/);
+  assert.deepEqual(
+    corrected.map((candidate) => candidate.candidateId),
+    identified.map((candidate) => candidate.candidateId),
   );
 });
 

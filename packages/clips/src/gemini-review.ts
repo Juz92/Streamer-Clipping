@@ -13,7 +13,12 @@ import {
 import { scorePick } from "./lib/notebooklm-scorer.js";
 import { loadHeatmap, scoreHeatmapBonus, type HeatPoint } from "./lib/heatmap-extractor.js";
 import { makeCandidateId } from "./lib/candidate-contract.js";
-import { makeSemanticRecallMomentId, persistRecallUnion } from "./lib/recall-union.js";
+import {
+  identifySemanticRecallCandidates,
+  makeSemanticRecallMomentId,
+  persistRecallUnion,
+  resolveRecallUnionCandidate,
+} from "./lib/recall-union.js";
 import { QUERY_ENRICHMENT_TIMESTAMPS, QUERY_ENRICHMENT_RUBRIC } from "./lib/notebooklm-queries.js";
 import { UNIFIED_SYSTEM_PROMPT, TRANSCRIPT_RECALL_ANALYSIS, windowTimestampedTranscript } from "./lib/gpt55-queries.js";
 
@@ -309,10 +314,11 @@ async function main() {
   }
 
   const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
+  const identifiedPicks = identifySemanticRecallCandidates(jobId, deduped);
 
   // Step 6: Sort, cap, and write the production derivative.
   const sortedIndices = Array.from(scores.keys()).sort((a, b) => (scores.get(b) ?? 0) - (scores.get(a) ?? 0));
-  const sortedPicks = sortedIndices.map((i) => deduped[parseInt(i, 10)]).slice(0, cli.top);
+  const sortedPicks = sortedIndices.map((i) => identifiedPicks[parseInt(i, 10)]).slice(0, cli.top);
   log.info(`Capped to top ${cli.top} picks (${sortedIndices.length} total before cap)`);
 
   const nlmMoments = sortedPicks.map((p, i) => ({
@@ -334,8 +340,6 @@ async function main() {
   }));
 
   const nlmMomentsPath = join(manifest.jobDir, "notebooklm-moments.json");
-  writeFileSync(nlmMomentsPath, JSON.stringify(nlmMoments, null, 2), "utf-8");
-  log.info(`Wrote ${nlmMoments.length} picks → ${nlmMomentsPath}`);
 
   // Step 7: Persist the uncapped semantic + scorer/chat/audio recall union.
   const { union } = persistRecallUnion({
@@ -343,16 +347,30 @@ async function main() {
     jobId,
     streamId: manifest.streamId,
     streamDate: manifest.uploadDate,
-    semanticCandidates: deduped,
+    semanticCandidates: identifiedPicks,
     poolPath: POOL_PATH,
   });
   log.info(`Persisted ${union.length} uncapped recall-union candidates`);
+  const canonicalMoments = [...new Map(nlmMoments.map((moment) => {
+    const canonical = resolveRecallUnionCandidate(union, moment.momentId);
+    return [canonical.candidateId, {
+      ...moment,
+      id: canonical.momentId,
+      momentId: canonical.momentId,
+      candidateId: canonical.candidateId,
+      startSec: canonical.startSec,
+      endSec: canonical.endSec,
+      durationSec: canonical.durationSec,
+    }];
+  })).values()];
+  writeFileSync(nlmMomentsPath, JSON.stringify(canonicalMoments, null, 2), "utf-8");
+  log.info(`Wrote ${canonicalMoments.length} canonical picks → ${nlmMomentsPath}`);
 
   // Step 8: Write review markdown
   const analysisDir = join(manifest.jobDir, "analysis");
   mkdirSync(analysisDir, { recursive: true });
   const reviewMdPath = join(analysisDir, "notebooklm-review.md");
-  const md = buildReviewMarkdown(manifest, nlmMoments);
+  const md = buildReviewMarkdown(manifest, canonicalMoments);
   writeFileSync(reviewMdPath, md, "utf-8");
   log.info(`Wrote review markdown → ${reviewMdPath}`);
 
