@@ -39,12 +39,28 @@ test("shadow scorecard exposes funnel, route gaps, selected ranks and honest ben
     writeJson(join(jobDir, "arc-grounding.json"), { results: [{
       candidateId: "job-006-2026-07-17:a",
       status: "GROUNDED",
+      beats: {
+        setupStartSec: 9,
+        premiseClearSec: 12,
+        actionStartSec: 16,
+        payoffStartSec: 22,
+        payoffEndSec: 27,
+        reactionEndSec: 31,
+      },
     }, {
       candidateId: "job-006-2026-07-17:b",
       status: "BLOCKED",
     }, {
       candidateId: "job-006-2026-07-17:c",
       status: "GROUNDED",
+      beats: {
+        setupStartSec: 50,
+        premiseClearSec: 52,
+        actionStartSec: 54,
+        payoffStartSec: 56,
+        payoffEndSec: 58,
+        reactionEndSec: 60,
+      },
     }] });
     writeJson(join(jobDir, "grounded-ranking.json"), {
       gate: { status: "WAITING_FOR_LABELS", labelSource: "private-review" },
@@ -53,8 +69,24 @@ test("shadow scorecard exposes funnel, route gaps, selected ranks and honest ben
       promoted: [],
     });
     writeJson(join(jobDir, "private-abc-selection.json"), {
+      source: "Justin Telegram",
+      selectedAt: "2026-07-17T00:00:00Z",
       decision: "liked all",
-      candidates: [{ candidateId: "job-006-2026-07-17:a", startSec: 10, endSec: 30 }],
+      publishApproved: false,
+      rightsStatus: "unresolved",
+      candidates: [{
+        candidateId: "job-006-2026-07-17:a",
+        startSec: 10,
+        endSec: 30,
+        beats: {
+          setupStartSec: 10,
+          premiseClearSec: 12,
+          actionStartSec: 16,
+          payoffStartSec: 22,
+          payoffEndSec: 27,
+          reactionEndSec: 30,
+        },
+      }],
     });
 
     const scorecard = buildShadowScorecard(jobDir, {
@@ -67,10 +99,12 @@ test("shadow scorecard exposes funnel, route gaps, selected ranks and honest ben
         ungradedRecords: 0,
         streams: 0,
         gradedStreams: 1,
+        benchmarkEligibleRecords: 0,
+        benchmarkEligibleStreams: 1,
         mediaAvailable: 0,
         excludedRecords: 0,
       },
-      benchmark: { status: "WAITING_FOR_LABELS", requiredGradedStreams: 3, gradedStreams: 1 },
+      benchmark: { status: "WAITING_FOR_LABELS", requiredEligibleStreams: 3, eligibleStreams: 1 },
     });
 
     assert.deepEqual(scorecard.funnel, { recalled: 3, grounded: 2, blocked: 1, ranked: 2 });
@@ -89,13 +123,22 @@ test("shadow scorecard exposes funnel, route gaps, selected ranks and honest ben
       rank: 2,
     }]);
     assert.deepEqual(scorecard.ranking.saturation, { maxEditorialStrength: 1, candidatesAtMax: 2 });
+    assert.deepEqual(scorecard.boundaryQuality, {
+      status: "MEASURED",
+      reviewedCandidates: 1,
+      acceptedWithinTwoSeconds: 1,
+      acceptanceRate: 1,
+      medianStartErrorSec: 1,
+      medianEndErrorSec: 1,
+      gatePassed: true,
+    });
     assert.equal(scorecard.mode, "SHADOW_ONLY");
     assert.equal(scorecard.uploadBlocked, true);
     assert.equal(scorecard.review.maximumProductionCandidates, 5);
     assert.equal(scorecard.baseline.status, "WAITING_FOR_LABELS");
     assert.deepEqual(scorecard.baseline.blockers, [
-      "Need 2 more graded streams",
-      "Need at least 6 graded candidates per held-out stream",
+      "Need 2 more benchmark-eligible streams",
+      "Need at least 6 benchmark-eligible candidates per held-out stream",
     ]);
   } finally {
     rmSync(clipsRoot, { recursive: true, force: true });

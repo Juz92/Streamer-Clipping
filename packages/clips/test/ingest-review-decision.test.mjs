@@ -10,6 +10,11 @@ const requiredLabels = {
   reaction: "nothing",
   coldOpenAccepted: false,
   arcIntent: "single-arc",
+  contextLevel: "self-contained",
+  contextCarrier: "dialogue",
+  visualProofRequired: false,
+  primaryEvidenceModality: "dialogue",
+  repetitionClass: "distinctive",
 };
 
 const beats = {
@@ -38,6 +43,11 @@ test("captures durable candidate-level taste, cold-open, arc, and boundary label
         coldOpenAccepted: true,
         correctedBeats: beats,
         arcIntent: "single-arc",
+        contextLevel: "self-contained",
+        contextCarrier: "dialogue",
+        visualProofRequired: false,
+        primaryEvidenceModality: "dialogue",
+        repetitionClass: "distinctive",
       }],
     },
     { suggestedRank: 2 },
@@ -61,9 +71,30 @@ test("captures durable candidate-level taste, cold-open, arc, and boundary label
   assert.equal(record.decisions[0].reaction, "wow");
   assert.equal(record.decisions[0].coldOpenAccepted, true);
   assert.equal(record.decisions[0].arcIntent, "single-arc");
+  assert.equal(record.decisions[0].contextLevel, "self-contained");
+  assert.equal(record.decisions[0].contextCarrier, "dialogue");
+  assert.equal(record.decisions[0].visualProofRequired, false);
+  assert.equal(record.decisions[0].primaryEvidenceModality, "dialogue");
+  assert.equal(record.decisions[0].repetitionClass, "distinctive");
   assert.equal(record.decisions[0].rightsStatus, "unresolved");
   assert.equal(record.decisions[0].publishApproved, false);
   assert.deepEqual(record.decisions[0].correctedBeats, beats);
+});
+
+test("stores explicit hard negatives even when reaction is unknown", () => {
+  const record = normalizeReviewRecord("stream-1", {
+    decisions: [{
+      ...requiredLabels,
+      rank: 1,
+      candidateId: "job-001:hard-negative",
+      momentId: "hard-negative",
+      status: "reject",
+      reaction: null,
+      rejectionReason: "not-funny",
+    }],
+  }, {});
+  assert.equal(record.decisions[0].status, "reject");
+  assert.equal(record.decisions[0].reaction, null);
 });
 
 test("candidate-level reruns preserve prior labels and update only repeated identities", () => {
@@ -106,6 +137,16 @@ test("candidate label storage round-trips and preserves prior rerun decisions", 
 });
 
 test("rejects missing, conflicting, duplicate, and invalid corrected identities", () => {
+  assert.throws(() => normalizeReviewRecord("stream-1", {
+    decisions: [{
+      ...requiredLabels,
+      contextLevel: undefined,
+      rank: 1,
+      candidateId: "job-001:a",
+      momentId: "a",
+      status: "keep",
+    }],
+  }, {}), /context level/i);
   assert.throws(() => normalizeReviewRecord("stream-1", {
     decisions: [{ rank: 1, candidateId: "job-001:a", momentId: "a", status: "keep" }],
   }, {}), /lane/);

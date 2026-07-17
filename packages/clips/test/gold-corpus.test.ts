@@ -26,9 +26,22 @@ test("Gold Corpus preserves graded reviews and literal ungraded private approval
           momentId: "recall-a",
           status: "reject",
           lane: "peanut-bits",
-          reaction: "nothing",
+          reaction: null,
           rejectionReason: "not-funny",
-          correctedBeats: { setupStartSec: 12, reactionEndSec: 24 },
+          correctedBeats: {
+            setupStartSec: 12,
+            premiseClearSec: 14,
+            actionStartSec: 16,
+            payoffStartSec: 18,
+            payoffEndSec: 21,
+            reactionEndSec: 24,
+          },
+          contextLevel: "self-contained",
+          contextCarrier: "dialogue",
+          visualProofRequired: false,
+          primaryEvidenceModality: "dialogue",
+          repetitionClass: "distinctive",
+          arcIntent: "single-arc",
         }],
       }, {
         streamId: "legacy-stream",
@@ -53,7 +66,14 @@ test("Gold Corpus preserves graded reviews and literal ungraded private approval
     writeJson(join(job4, "arc-grounding.json"), { results: [{
       candidateId: "job-004-2026-07-08:recall-a",
       status: "GROUNDED",
-      beats: { setupStartSec: 11, reactionEndSec: 25 },
+      beats: {
+        setupStartSec: 11,
+        premiseClearSec: 14,
+        actionStartSec: 16,
+        payoffStartSec: 18,
+        payoffEndSec: 22,
+        reactionEndSec: 25,
+      },
     }] });
 
     writeJson(join(job5, "recall-union.json"), [{
@@ -67,18 +87,35 @@ test("Gold Corpus preserves graded reviews and literal ungraded private approval
     writeJson(join(job5, "arc-grounding.json"), { results: [{
       candidateId: "job-005-2026-07-14:recall-b",
       status: "GROUNDED",
-      beats: { setupStartSec: 39, reactionEndSec: 61 },
+      beats: {
+        setupStartSec: 39,
+        premiseClearSec: 43,
+        actionStartSec: 47,
+        payoffStartSec: 51,
+        payoffEndSec: 56,
+        reactionEndSec: 61,
+      },
     }] });
     writeJson(join(job5, "private-abc-selection.json"), {
       streamId: "stream-5",
       source: "Justin Telegram",
+      selectedAt: "2026-07-17T00:00:00Z",
       decision: "liked all",
+      publishApproved: false,
+      rightsStatus: "unresolved",
       candidates: [{
         candidateId: "job-005-2026-07-14:recall-b",
         label: "A",
         startSec: 38,
         endSec: 62,
-        beats: { setupStartSec: 39, reactionEndSec: 61 },
+        beats: {
+          setupStartSec: 39,
+          premiseClearSec: 43,
+          actionStartSec: 47,
+          payoffStartSec: 51,
+          payoffEndSec: 56,
+          reactionEndSec: 61,
+        },
       }],
     });
     writeFileSync(join(job5, "raw-clips", "01-reviewed.mp4"), "reviewed source window", "utf-8");
@@ -89,6 +126,8 @@ test("Gold Corpus preserves graded reviews and literal ungraded private approval
     assert.equal(corpus.summary.gradedRecords, 1);
     assert.equal(corpus.summary.ungradedRecords, 1);
     assert.equal(corpus.summary.gradedStreams, 1);
+    assert.equal(corpus.summary.benchmarkEligibleRecords, 1);
+    assert.equal(corpus.summary.benchmarkEligibleStreams, 1);
     assert.equal(corpus.summary.excludedRecords, 1);
     assert.deepEqual(corpus.excluded, [{
       candidateId: "job-002-2026-07-04:legacy-a",
@@ -101,13 +140,27 @@ test("Gold Corpus preserves graded reviews and literal ungraded private approval
       status: record.status,
       reaction: record.reaction,
       labelStrength: record.labelStrength,
+      benchmarkEligible: record.benchmarkEligible,
+      contextLevel: record.contextLevel,
+      contextCarrier: record.contextCarrier,
+      visualProofRequired: record.visualProofRequired,
+      primaryEvidenceModality: record.primaryEvidenceModality,
+      repetitionClass: record.repetitionClass,
+      arcIntent: record.arcIntent,
       sourceWindow: record.sourceWindow,
       mediaAvailable: record.mediaAvailable,
     })), [{
       candidateId: "job-004-2026-07-08:recall-a",
       status: "reject",
-      reaction: "nothing",
+      reaction: null,
       labelStrength: "graded",
+      benchmarkEligible: true,
+      contextLevel: "self-contained",
+      contextCarrier: "dialogue",
+      visualProofRequired: false,
+      primaryEvidenceModality: "dialogue",
+      repetitionClass: "distinctive",
+      arcIntent: "single-arc",
       sourceWindow: { startSec: 12, endSec: 24 },
       mediaAvailable: false,
     }, {
@@ -115,6 +168,13 @@ test("Gold Corpus preserves graded reviews and literal ungraded private approval
       status: "keep",
       reaction: null,
       labelStrength: "ungraded",
+      benchmarkEligible: false,
+      contextLevel: null,
+      contextCarrier: null,
+      visualProofRequired: null,
+      primaryEvidenceModality: null,
+      repetitionClass: null,
+      arcIntent: null,
       sourceWindow: { startSec: 38, endSec: 62 },
       mediaAvailable: true,
     }]);

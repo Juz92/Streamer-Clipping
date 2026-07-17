@@ -8,6 +8,7 @@ import {
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeContentLane } from "./lib/content-lanes.js";
+import { loadValidatedPrivateSelection } from "./lib/candidate-contract.js";
 
 interface BeatMap {
   setupStartSec?: number;
@@ -38,6 +39,13 @@ export interface GoldCorpusRecord {
   status: "keep" | "reject" | "reserve";
   reaction: string | null;
   labelStrength: "graded" | "ungraded";
+  benchmarkEligible: boolean;
+  contextLevel: "self-contained" | "light-context" | "deep-context" | null;
+  contextCarrier: "dialogue" | "title" | "caption" | "visual" | null;
+  visualProofRequired: boolean | null;
+  primaryEvidenceModality: "dialogue" | "audio" | "visual" | "chat" | "hybrid" | null;
+  repetitionClass: "distinctive" | "tactical-filler" | "not-applicable" | null;
+  arcIntent: "single-arc" | "compilation" | null;
   lane: string | null;
   rejectionReason: string | null;
   sourceWindow: { startSec: number; endSec: number };
@@ -64,13 +72,15 @@ export interface GoldCorpus {
     ungradedRecords: number;
     streams: number;
     gradedStreams: number;
+    benchmarkEligibleRecords: number;
+    benchmarkEligibleStreams: number;
     mediaAvailable: number;
     excludedRecords: number;
   };
   benchmark: {
     status: "READY" | "WAITING_FOR_LABELS";
-    requiredGradedStreams: 3;
-    gradedStreams: number;
+    requiredEligibleStreams: 3;
+    eligibleStreams: number;
   };
 }
 
@@ -87,20 +97,13 @@ interface ManualFeedback {
       rejectionReason?: string | null;
       correctedBeats?: BeatMap | null;
       file?: string;
+      contextLevel?: GoldCorpusRecord["contextLevel"];
+      contextCarrier?: GoldCorpusRecord["contextCarrier"];
+      visualProofRequired?: boolean | null;
+      primaryEvidenceModality?: GoldCorpusRecord["primaryEvidenceModality"];
+      repetitionClass?: GoldCorpusRecord["repetitionClass"];
+      arcIntent?: GoldCorpusRecord["arcIntent"];
     }>;
-  }>;
-}
-
-interface PrivateSelection {
-  streamId?: string;
-  selectedAt?: string;
-  decision?: string;
-  candidates?: Array<{
-    candidateId?: string;
-    label?: string;
-    startSec?: number;
-    endSec?: number;
-    beats?: BeatMap;
   }>;
 }
 
@@ -158,6 +161,21 @@ function resolveLane(explicitLane: string | null | undefined, candidate: Candida
   return null;
 }
 
+function allowedValue<T extends string>(value: unknown, allowed: readonly T[]): T | null {
+  return typeof value === "string" && allowed.includes(value as T) ? value as T : null;
+}
+
+function hasCompleteBeatMap(beats: BeatMap | null): boolean {
+  return beats != null && [
+    beats.setupStartSec,
+    beats.premiseClearSec,
+    beats.actionStartSec,
+    beats.payoffStartSec,
+    beats.payoffEndSec,
+    beats.reactionEndSec,
+  ].every((value) => Number.isFinite(value));
+}
+
 function relativeMediaPath(clipsRoot: string, path: string | null): string | null {
   if (!path || !existsSync(path) || !statSync(path).isFile()) return null;
   return relative(clipsRoot, path).replaceAll("\\", "/");
@@ -207,7 +225,7 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
     for (const review of feedback.records ?? []) {
       for (const decision of review.decisions ?? []) {
         const candidateId = decision.candidateId?.trim();
-        if (!candidateId || !decision.status || !decision.reaction || !review.streamId) continue;
+        if (!candidateId || !decision.status || !review.streamId) continue;
         const jobId = jobIdFromCandidate(candidateId);
         const jobDir = join(clipsRoot, jobId);
         if (!existsSync(join(jobDir, "recall-union.json")) || !existsSync(join(jobDir, "arc-grounding.json"))) {
@@ -232,14 +250,44 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
         const beatMap = decision.correctedBeats ?? grounding.beats ?? null;
         const mediaCandidate = decision.file ? join(clipsRoot, jobId, decision.file) : null;
         const mediaPath = relativeMediaPath(clipsRoot, mediaCandidate);
+        const labelStrength = decision.reaction || decision.status === "reject" ? "graded" : "ungraded";
+        const contextLevel = allowedValue(decision.contextLevel, ["self-contained", "light-context", "deep-context"]);
+        const contextCarrier = allowedValue(decision.contextCarrier, ["dialogue", "title", "caption", "visual"]);
+        const primaryEvidenceModality = allowedValue(
+          decision.primaryEvidenceModality,
+          ["dialogue", "audio", "visual", "chat", "hybrid"],
+        );
+        const repetitionClass = allowedValue(
+          decision.repetitionClass,
+          ["distinctive", "tactical-filler", "not-applicable"],
+        );
+        const arcIntent = allowedValue(decision.arcIntent, ["single-arc", "compilation"]);
+        const visualProofRequired = typeof decision.visualProofRequired === "boolean"
+          ? decision.visualProofRequired
+          : null;
+        const benchmarkEligible = labelStrength === "graded"
+          && hasCompleteBeatMap(beatMap)
+          && contextLevel != null
+          && contextCarrier != null
+          && visualProofRequired != null
+          && primaryEvidenceModality != null
+          && repetitionClass != null
+          && arcIntent != null;
         addRecord(byCandidate, {
           candidateId,
           jobId,
           momentId: decision.momentId ?? candidateId.slice(candidateId.indexOf(":") + 1),
           streamId: review.streamId,
           status: decision.status,
-          reaction: decision.reaction,
-          labelStrength: "graded",
+          reaction: decision.reaction ?? null,
+          labelStrength,
+          benchmarkEligible,
+          contextLevel,
+          contextCarrier,
+          visualProofRequired,
+          primaryEvidenceModality,
+          repetitionClass,
+          arcIntent,
           lane: resolveLane(decision.lane, union),
           rejectionReason: decision.rejectionReason ?? null,
           sourceWindow: sourceWindow(candidateId, union, grounding, null, beatMap),
@@ -258,19 +306,12 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
   for (const entry of readdirSync(clipsRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith("job-")) continue;
     const jobDir = join(clipsRoot, entry.name);
-    const selectionPath = join(jobDir, "private-abc-selection.json");
-    if (!existsSync(selectionPath)) continue;
-    const selection = readJson<PrivateSelection>(selectionPath);
-    if (selection.decision !== "liked all" || !selection.streamId) continue;
-    const evidence = evidenceFor(entry.name);
-    for (const approved of selection.candidates ?? []) {
-      const candidateId = approved.candidateId?.trim();
-      if (!candidateId) continue;
-      const union = evidence.union.get(candidateId);
-      const grounding = evidence.grounding.get(candidateId);
-      if (!union || grounding?.status !== "GROUNDED") {
-        throw new Error(`Gold Corpus candidate ${candidateId} lacks grounded source evidence`);
-      }
+    const selection = loadValidatedPrivateSelection<CandidateEvidence>(jobDir);
+    if (!selection) continue;
+    if (!selection.streamId) throw new Error(`Private selection for ${entry.name} requires streamId`);
+    for (const approved of selection.candidates) {
+      const candidateId = approved.candidateId;
+      const union = approved.candidate;
       const mediaPath = privateMediaPath(clipsRoot, jobDir, approved.label);
       addRecord(byCandidate, {
         candidateId,
@@ -280,14 +321,21 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
         status: "keep",
         reaction: null,
         labelStrength: "ungraded",
+        benchmarkEligible: false,
+        contextLevel: null,
+        contextCarrier: null,
+        visualProofRequired: null,
+        primaryEvidenceModality: null,
+        repetitionClass: null,
+        arcIntent: null,
         lane: resolveLane(null, union),
         rejectionReason: null,
-        sourceWindow: sourceWindow(candidateId, union, grounding, approved, approved.beats),
-        beatMap: approved.beats ?? grounding.beats ?? null,
+        sourceWindow: { startSec: approved.startSec, endSec: approved.endSec },
+        beatMap: approved.beats,
         recallRoutes: union.recallRoutes ?? [],
         labelSource: "private-selection",
         sourceArtifact: `${entry.name}/private-abc-selection.json`,
-        reviewedAt: selection.selectedAt ?? null,
+        reviewedAt: selection.selectedAt,
         mediaPath,
         mediaAvailable: mediaPath != null,
       });
@@ -297,7 +345,9 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
   const records = [...byCandidate.values()].sort((a, b) => a.candidateId.localeCompare(b.candidateId));
   excluded.sort((a, b) => a.candidateId.localeCompare(b.candidateId));
   const graded = records.filter((record) => record.labelStrength === "graded");
+  const eligible = records.filter((record) => record.benchmarkEligible);
   const gradedStreams = new Set(graded.map((record) => record.streamId)).size;
+  const benchmarkEligibleStreams = new Set(eligible.map((record) => record.streamId)).size;
   return {
     version: 1,
     records,
@@ -308,13 +358,15 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
       ungradedRecords: records.length - graded.length,
       streams: new Set(records.map((record) => record.streamId)).size,
       gradedStreams,
+      benchmarkEligibleRecords: eligible.length,
+      benchmarkEligibleStreams,
       mediaAvailable: records.filter((record) => record.mediaAvailable).length,
       excludedRecords: excluded.length,
     },
     benchmark: {
-      status: gradedStreams >= 3 ? "READY" : "WAITING_FOR_LABELS",
-      requiredGradedStreams: 3,
-      gradedStreams,
+      status: benchmarkEligibleStreams >= 3 ? "READY" : "WAITING_FOR_LABELS",
+      requiredEligibleStreams: 3,
+      eligibleStreams: benchmarkEligibleStreams,
     },
   };
 }

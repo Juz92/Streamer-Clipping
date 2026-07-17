@@ -28,6 +28,10 @@ interface CorrectedBeatMap {
 
 type ReviewStatus = "keep" | "reject" | "reserve";
 type ArcIntent = "single-arc" | "compilation";
+type ContextLevel = "self-contained" | "light-context" | "deep-context";
+type ContextCarrier = "dialogue" | "title" | "caption" | "visual";
+type EvidenceModality = "dialogue" | "audio" | "visual" | "chat" | "hybrid";
+type RepetitionClass = "distinctive" | "tactical-filler" | "not-applicable";
 
 interface ReviewDecision {
   streamId?: string;
@@ -47,6 +51,11 @@ interface ReviewDecision {
     coldOpenAccepted?: boolean | null;
     correctedBeats?: CorrectedBeatMap | null;
     arcIntent?: ArcIntent | null;
+    contextLevel?: ContextLevel | null;
+    contextCarrier?: ContextCarrier | null;
+    visualProofRequired?: boolean | null;
+    primaryEvidenceModality?: EvidenceModality | null;
+    repetitionClass?: RepetitionClass | null;
     rightsStatus?: "cleared" | "unresolved" | "blocked" | null;
     publishApproved?: boolean | null;
     notes?: string;
@@ -184,15 +193,35 @@ export function normalizeReviewRecord(
     const rawLane = item.lane ?? moment?.contentLane;
     const lane = normalizeContentLane(rawLane);
     if (!lane) throw new Error(`Review decision ${candidateId} needs a valid lane label`);
-    const reaction = normalizeViewerReaction(item.reaction);
-    if (!reaction) {
-      throw new Error(`Review decision ${candidateId} needs a valid reaction label`);
+    const reaction = normalizeViewerReaction(item.reaction) ?? null;
+    if (item.reaction != null && !reaction) {
+      throw new Error(`Review decision ${candidateId} has an invalid reaction label`);
+    }
+    if (item.status === "keep" && !reaction) {
+      throw new Error(`Kept candidate ${candidateId} needs a valid reaction label`);
     }
     if (typeof item.coldOpenAccepted !== "boolean") {
       throw new Error(`Review decision ${candidateId} needs a cold-open acceptance label`);
     }
     if (!item.arcIntent || !["single-arc", "compilation"].includes(item.arcIntent)) {
       throw new Error(`Review decision ${candidateId} needs single-arc or compilation intent`);
+    }
+    if (!item.contextLevel || !["self-contained", "light-context", "deep-context"].includes(item.contextLevel)) {
+      throw new Error(`Review decision ${candidateId} needs a valid context level`);
+    }
+    if (!item.contextCarrier || !["dialogue", "title", "caption", "visual"].includes(item.contextCarrier)) {
+      throw new Error(`Review decision ${candidateId} needs a valid context carrier`);
+    }
+    if (typeof item.visualProofRequired !== "boolean") {
+      throw new Error(`Review decision ${candidateId} needs a visual-proof requirement label`);
+    }
+    if (!item.primaryEvidenceModality
+      || !["dialogue", "audio", "visual", "chat", "hybrid"].includes(item.primaryEvidenceModality)) {
+      throw new Error(`Review decision ${candidateId} needs a primary evidence modality`);
+    }
+    if (!item.repetitionClass
+      || !["distinctive", "tactical-filler", "not-applicable"].includes(item.repetitionClass)) {
+      throw new Error(`Review decision ${candidateId} needs a repetition classification`);
     }
     const rejectionReasons = ["weak-premise", "no-payoff", "needs-context", "generic-gameplay", "bad-cut", "wrong-lane", "not-funny", "other"];
     if (item.rejectionReason != null && !rejectionReasons.includes(item.rejectionReason)) {

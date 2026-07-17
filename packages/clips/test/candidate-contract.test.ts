@@ -104,19 +104,41 @@ test("explicit private selection proceeds without rewriting automated ranking ev
     };
     writeFileSync(join(root, "recall-union.json"), JSON.stringify([candidate]), "utf-8");
     writeFileSync(join(root, "arc-grounding.json"), JSON.stringify({
-      results: [{ candidateId: candidate.candidateId, status: "GROUNDED" }],
+      results: [{
+        candidateId: candidate.candidateId,
+        status: "GROUNDED",
+        beats: {
+          setupStartSec: 8,
+          premiseClearSec: 12,
+          actionStartSec: 16,
+          payoffStartSec: 22,
+          payoffEndSec: 28,
+          reactionEndSec: 34,
+        },
+      }],
     }), "utf-8");
     writeFileSync(join(root, "grounded-ranking.json"), JSON.stringify({
       gate: { status: "WAITING_FOR_LABELS", labelSource: "private-review" },
       promoted: [],
     }), "utf-8");
     writeFileSync(join(root, "private-abc-selection.json"), JSON.stringify({
+      source: "Justin Telegram",
+      selectedAt: "2026-07-17T00:00:00Z",
       decision: "liked all",
+      publishApproved: false,
+      rightsStatus: "unresolved",
       candidates: [{
         candidateId: candidate.candidateId,
         startSec: 8,
         endSec: 34,
-        beats: { setupStartSec: 8, reactionEndSec: 34 },
+        beats: {
+          setupStartSec: 8,
+          premiseClearSec: 12,
+          actionStartSec: 16,
+          payoffStartSec: 22,
+          payoffEndSec: 28,
+          reactionEndSec: 34,
+        },
       }],
     }), "utf-8");
 
@@ -124,7 +146,14 @@ test("explicit private selection proceeds without rewriting automated ranking ev
       ...candidate,
       startSec: 8,
       endSec: 34,
-      beats: { setupStartSec: 8, reactionEndSec: 34 },
+      beats: {
+        setupStartSec: 8,
+        premiseClearSec: 12,
+        actionStartSec: 16,
+        payoffStartSec: 22,
+        payoffEndSec: 28,
+        reactionEndSec: 34,
+      },
     }]);
     const report = JSON.parse(readFileSync(join(root, "grounded-ranking.json"), "utf-8"));
     assert.equal(report.gate.status, "WAITING_FOR_LABELS");
@@ -146,6 +175,44 @@ test("automated ranking rejects a manual label source masquerading as PASS", () 
     writeFileSync(join(root, "grounded-ranked-moments.json"), JSON.stringify([candidate]), "utf-8");
 
     assert.throws(() => loadValidatedGroundedPromoted(root), /label source/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("private selection requires complete authority metadata and at most five candidates", () => {
+  const root = mkdtempSync(join(tmpdir(), "private-authority-"));
+  try {
+    const approved = {
+      candidateId: "job-a:recall-a",
+      startSec: 1,
+      endSec: 7,
+      beats: {
+        setupStartSec: 1,
+        premiseClearSec: 2,
+        actionStartSec: 3,
+        payoffStartSec: 4,
+        payoffEndSec: 5,
+        reactionEndSec: 6,
+      },
+    };
+    writeFileSync(join(root, "private-abc-selection.json"), JSON.stringify({
+      decision: "liked all",
+      candidates: [approved],
+    }), "utf-8");
+    assert.throws(() => loadValidatedGroundedPromoted(root), /decision source|publish status/i);
+
+    writeFileSync(join(root, "private-abc-selection.json"), JSON.stringify({
+      source: "Justin Telegram",
+      decision: "liked all",
+      publishApproved: false,
+      rightsStatus: "unresolved",
+      candidates: Array.from({ length: 6 }, (_, index) => ({
+        ...approved,
+        candidateId: `job-a:recall-${index}`,
+      })),
+    }), "utf-8");
+    assert.throws(() => loadValidatedGroundedPromoted(root), /at most five/i);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -2,6 +2,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildGoldCorpus, type GoldCorpus, type GoldCorpusRecord } from "./gold-corpus.js";
+import {
+  loadValidatedPrivateSelection,
+  type CandidateBeatMap,
+  type ValidatedPrivateSelection,
+} from "./lib/candidate-contract.js";
 import { findStreamDir } from "./lib/manifest.js";
 
 interface RecallCandidate {
@@ -13,6 +18,7 @@ interface RecallCandidate {
 interface GroundingResult {
   candidateId?: string;
   status?: string;
+  beats?: CandidateBeatMap;
 }
 
 interface RankedCandidate {
@@ -24,10 +30,6 @@ interface RankedCandidate {
 interface RankingReport {
   gate?: { status?: string; labelSource?: string };
   ranked?: RankedCandidate[];
-}
-
-interface PrivateSelection {
-  candidates?: Array<{ candidateId?: string }>;
 }
 
 function readJson<T>(path: string): T {
@@ -42,7 +44,7 @@ function countValues(values: string[]): Record<string, number> {
 
 function tasteScore(record: GoldCorpusRecord): number {
   if (record.status === "reject" || record.reaction == null) return 0;
-  if (record.reaction === "lol" || record.reaction === "wow") return 1;
+  if (record.reaction === "lol") return 1;
   return record.reaction === "smiled" ? 0.5 : 0;
 }
 
@@ -52,19 +54,19 @@ function baselineBenchmark(clipsRoot: string, corpus: GoldCorpus): {
   streams?: Array<{ streamId: string; labels: number; tasteAt5: number }>;
   meanTasteAt5?: number;
 } {
-  const graded = corpus.records.filter((record) => record.labelStrength === "graded");
+  const eligible = corpus.records.filter((record) => record.benchmarkEligible);
   const byStream = new Map<string, GoldCorpusRecord[]>();
-  for (const record of graded) {
+  for (const record of eligible) {
     const rows = byStream.get(record.streamId) ?? [];
     rows.push(record);
     byStream.set(record.streamId, rows);
   }
   const blockers: string[] = [];
-  if (corpus.summary.gradedStreams < 3) {
-    blockers.push(`Need ${3 - corpus.summary.gradedStreams} more graded streams`);
+  if (corpus.summary.benchmarkEligibleStreams < 3) {
+    blockers.push(`Need ${3 - corpus.summary.benchmarkEligibleStreams} more benchmark-eligible streams`);
   }
   if (byStream.size === 0 || [...byStream.values()].some((records) => records.length < 6)) {
-    blockers.push("Need at least 6 graded candidates per held-out stream");
+    blockers.push("Need at least 6 benchmark-eligible candidates per held-out stream");
   }
   if (blockers.length > 0) return { status: "WAITING_FOR_LABELS", blockers };
 
@@ -101,6 +103,51 @@ function baselineBenchmark(clipsRoot: string, corpus: GoldCorpus): {
   };
 }
 
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const ordered = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0 ? (ordered[middle - 1] + ordered[middle]) / 2 : ordered[middle];
+}
+
+function summarizeBoundaryQuality(selection: ValidatedPrivateSelection<RecallCandidate> | null) {
+  if (!selection) {
+    return {
+      status: "WAITING_FOR_PRIVATE_REVIEW" as const,
+      reviewedCandidates: 0,
+      acceptedWithinTwoSeconds: 0,
+      acceptanceRate: null,
+      medianStartErrorSec: null,
+      medianEndErrorSec: null,
+      gatePassed: null,
+    };
+  }
+  const comparisons = selection.candidates.flatMap((approved) => approved.groundingBeats ? [{
+    startError: Math.abs(approved.beats.setupStartSec - approved.groundingBeats.setupStartSec),
+    endError: Math.abs(approved.beats.reactionEndSec - approved.groundingBeats.reactionEndSec),
+  }] : []);
+  const acceptedWithinTwoSeconds = comparisons.filter(
+    ({ startError, endError }) => startError <= 2 && endError <= 2,
+  ).length;
+  const acceptanceRate = selection.candidates.length > 0
+    ? acceptedWithinTwoSeconds / selection.candidates.length
+    : 0;
+  const medianStartErrorSec = median(comparisons.map(({ startError }) => startError));
+  const medianEndErrorSec = median(comparisons.map(({ endError }) => endError));
+  const gatePassed = (medianStartErrorSec != null && medianEndErrorSec != null
+      && medianStartErrorSec <= 2 && medianEndErrorSec <= 2)
+    || acceptanceRate >= 0.7;
+  return {
+    status: "MEASURED" as const,
+    reviewedCandidates: selection.candidates.length,
+    acceptedWithinTwoSeconds,
+    acceptanceRate,
+    medianStartErrorSec,
+    medianEndErrorSec,
+    gatePassed,
+  };
+}
+
 export function buildShadowScorecard(jobDir: string, corpus: GoldCorpus) {
   const manifest = readJson<{
     streamId?: string;
@@ -112,9 +159,8 @@ export function buildShadowScorecard(jobDir: string, corpus: GoldCorpus) {
   const union = readJson<RecallCandidate[]>(join(jobDir, "recall-union.json"));
   const grounding = readJson<{ results?: GroundingResult[] }>(join(jobDir, "arc-grounding.json")).results ?? [];
   const ranking = readJson<RankingReport>(join(jobDir, "grounded-ranking.json"));
-  const selectionPath = join(jobDir, "private-abc-selection.json");
-  const selection = existsSync(selectionPath) ? readJson<PrivateSelection>(selectionPath) : {};
-  const selectedIds = (selection.candidates ?? []).map((candidate) => candidate.candidateId).filter(Boolean) as string[];
+  const selection = loadValidatedPrivateSelection<RecallCandidate>(jobDir);
+  const selectedIds = selection?.candidates.map((approved) => approved.candidateId) ?? [];
   const rankByCandidate = new Map((ranking.ranked ?? []).map((candidate, index) => [
     candidate.candidateId,
     candidate.rank ?? index + 1,
@@ -159,15 +205,17 @@ export function buildShadowScorecard(jobDir: string, corpus: GoldCorpus) {
         candidatesAtMax: maxStrength == null ? 0 : strengths.filter((score) => score === maxStrength).length,
       },
     },
+    boundaryQuality: summarizeBoundaryQuality(selection),
     review: {
       status: selectedIds.length > 0 ? "PRIVATE_SELECTION_CAPTURED" : "WAITING_FOR_PRIVATE_REVIEW",
       maximumProductionCandidates: 5,
       selectedCandidateIds: selectedIds,
-      withinProductionLimit: selectedIds.length <= 5,
+      withinProductionLimit: true,
     },
     labels: {
       graded: labels.filter((record) => record.labelStrength === "graded").length,
       ungraded: labels.filter((record) => record.labelStrength === "ungraded").length,
+      benchmarkEligible: labels.filter((record) => record.benchmarkEligible).length,
     },
     baseline: baselineBenchmark(dirname(jobDir), corpus),
   };

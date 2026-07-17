@@ -57,21 +57,81 @@ export function chooseCanonicalMomentSource<T extends CandidateMomentInput>(
   return scorerMoments;
 }
 
-function loadValidatedPrivateSelection<T extends CandidateMomentInput>(streamDir: string): T[] | null {
+export interface CandidateBeatMap {
+  setupStartSec: number;
+  premiseClearSec: number;
+  actionStartSec: number;
+  payoffStartSec: number;
+  payoffEndSec: number;
+  reactionEndSec: number;
+  flashSec?: number;
+}
+
+export interface ValidatedPrivateSelectionCandidate<T extends CandidateMomentInput> {
+  candidateId: string;
+  label?: string;
+  startSec: number;
+  endSec: number;
+  beats: CandidateBeatMap;
+  groundingBeats: CandidateBeatMap | null;
+  candidate: T;
+}
+
+export interface ValidatedPrivateSelection<T extends CandidateMomentInput> {
+  streamId: string | null;
+  source: string;
+  selectedAt: string | null;
+  publishApproved: boolean;
+  rightsStatus: "cleared" | "unresolved" | "blocked";
+  candidates: Array<ValidatedPrivateSelectionCandidate<T>>;
+}
+
+function validateBeatMap(candidateId: string, beats: CandidateBeatMap | undefined): CandidateBeatMap {
+  if (!beats) throw new Error(`Private selection candidate ${candidateId} requires an explicit Beat Map`);
+  const ordered = [
+    beats.setupStartSec,
+    beats.premiseClearSec,
+    beats.actionStartSec,
+    beats.payoffStartSec,
+    beats.payoffEndSec,
+    beats.reactionEndSec,
+  ];
+  if (ordered.some((value) => !Number.isFinite(value))
+    || ordered.some((value, index) => index > 0 && value < ordered[index - 1])) {
+    throw new Error(`Private selection candidate ${candidateId} has an invalid Beat Map`);
+  }
+  return beats;
+}
+
+export function loadValidatedPrivateSelection<T extends CandidateMomentInput>(
+  streamDir: string,
+): ValidatedPrivateSelection<T> | null {
   const selectionPath = join(streamDir, "private-abc-selection.json");
   if (!existsSync(selectionPath)) return null;
   const selection = JSON.parse(readFileSync(selectionPath, "utf-8")) as {
+    streamId?: string;
+    source?: string;
+    selectedAt?: string;
     decision?: string;
+    publishApproved?: boolean;
+    rightsStatus?: string;
     candidates?: Array<{
       candidateId?: string;
+      label?: string;
       startSec?: number;
       endSec?: number;
-      beats?: unknown;
+      beats?: CandidateBeatMap;
     }>;
   };
   if (selection.decision !== "liked all" || (selection.candidates?.length ?? 0) === 0) {
     throw new Error("Private selection is incomplete; expected an explicit non-empty liked-all decision");
   }
+  if (!selection.source?.trim()) throw new Error("Private selection requires a decision source");
+  if (typeof selection.publishApproved !== "boolean") throw new Error("Private selection requires an explicit publish status");
+  if (!selection.rightsStatus || !["cleared", "unresolved", "blocked"].includes(selection.rightsStatus)) {
+    throw new Error("Private selection requires an explicit rights status");
+  }
+  if (selection.candidates!.length > 5) throw new Error("Private selection may contain at most five candidates");
 
   const unionPath = join(streamDir, "recall-union.json");
   const groundingPath = join(streamDir, "arc-grounding.json");
@@ -84,13 +144,13 @@ function loadValidatedPrivateSelection<T extends CandidateMomentInput>(streamDir
     endSec?: number;
   }>;
   const grounding = JSON.parse(readFileSync(groundingPath, "utf-8")) as {
-    results?: Array<{ candidateId?: string; status?: string }>;
+    results?: Array<{ candidateId?: string; status?: string; beats?: CandidateBeatMap }>;
   };
   const byCandidate = new Map(union.map((candidate) => [candidate.candidateId, candidate]));
-  const grounded = new Map((grounding.results ?? []).map((result) => [result.candidateId, result.status]));
+  const groundingByCandidate = new Map((grounding.results ?? []).map((result) => [result.candidateId, result]));
   const seen = new Set<string>();
 
-  return selection.candidates!.map((approved) => {
+  const candidates = selection.candidates!.map((approved) => {
     const candidateId = approved.candidateId?.trim();
     if (!candidateId || seen.has(candidateId)) {
       throw new Error(`Private selection has a missing or duplicate candidateId: ${candidateId ?? "missing"}`);
@@ -98,25 +158,44 @@ function loadValidatedPrivateSelection<T extends CandidateMomentInput>(streamDir
     seen.add(candidateId);
     const candidate = byCandidate.get(candidateId);
     if (!candidate) throw new Error(`Private selection candidate ${candidateId} is missing from Recall Union`);
-    if (grounded.get(candidateId) !== "GROUNDED") {
+    const grounded = groundingByCandidate.get(candidateId);
+    if (grounded?.status !== "GROUNDED") {
       throw new Error(`Private selection candidate ${candidateId} did not pass Arc Gate`);
     }
     if (!Number.isFinite(approved.startSec) || !Number.isFinite(approved.endSec)
       || approved.endSec! <= approved.startSec!) {
       throw new Error(`Private selection candidate ${candidateId} has an invalid source window`);
     }
+    const beats = validateBeatMap(candidateId, approved.beats);
     return {
-      ...candidate,
-      startSec: approved.startSec,
-      endSec: approved.endSec,
-      ...(approved.beats == null ? {} : { beats: approved.beats }),
-    } as T;
+      candidateId,
+      label: approved.label,
+      startSec: approved.startSec!,
+      endSec: approved.endSec!,
+      beats,
+      groundingBeats: grounded.beats ?? null,
+      candidate: {
+        ...candidate,
+        startSec: approved.startSec,
+        endSec: approved.endSec,
+        beats,
+      } as T,
+    };
   });
+
+  return {
+    streamId: selection.streamId?.trim() || null,
+    source: selection.source.trim(),
+    selectedAt: selection.selectedAt ?? null,
+    publishApproved: selection.publishApproved,
+    rightsStatus: selection.rightsStatus as ValidatedPrivateSelection<T>["rightsStatus"],
+    candidates,
+  };
 }
 
 export function loadValidatedGroundedPromoted<T extends CandidateMomentInput>(streamDir: string): T[] {
   const privateSelection = loadValidatedPrivateSelection<T>(streamDir);
-  if (privateSelection) return privateSelection;
+  if (privateSelection) return privateSelection.candidates.map((approved) => approved.candidate);
 
   const reportPath = join(streamDir, "grounded-ranking.json");
   const derivativePath = join(streamDir, "grounded-ranked-moments.json");
