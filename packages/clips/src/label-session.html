@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Label Session</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #fff; --ink: #16150f; --muted: #6b6a60;
+    --line: #dededa; --accent: #b4530a; --ok: #1f6f3f; --warn: #8a1f1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14140f; --panel: #1d1d17; --ink: #f2f1e8; --muted: #9a998d;
+      --line: #32322a; --accent: #e8903a; --ok: #6ec28c; --warn: #e88a8a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 96px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+  .meta { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 16px; }
+  video { width: 100%; border-radius: 6px; background: #000; display: block; }
+  .desc { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+  fieldset { border: 0; margin: 20px 0 0; padding: 0; }
+  legend { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0 0 8px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opts button {
+    font: inherit; font-size: 13px; padding: 6px 11px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--ink);
+  }
+  .opts button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .proposed { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .proposed b { color: var(--ink); font-weight: 600; }
+  .nav { display: flex; gap: 10px; align-items: center; margin-top: 24px; flex-wrap: wrap; }
+  .nav button {
+    font: inherit; padding: 9px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff; font-weight: 600;
+  }
+  .nav button.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 400; }
+  .nav button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .missing { color: var(--warn); font-size: 13px; }
+  .done { color: var(--ok); font-size: 13px; }
+  textarea { width: 100%; font: inherit; font-size: 13px; padding: 8px; border-radius: 6px;
+    border: 1px solid var(--line); background: transparent; color: var(--ink); resize: vertical; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Label session</h1>
+    <div class="meta" id="progress"></div>
+  </header>
+
+  <div id="stage"></div>
+
+  <div class="card" id="summary" hidden>
+    <h1 style="font-size:16px">Session complete</h1>
+    <p class="desc">Save the file, then run the ingest command printed below.</p>
+    <div id="summaryBody"></div>
+    <div class="nav">
+      <button id="save">Save review-decision.json</button>
+      <button class="ghost" id="back">Back to last clip</button>
+    </div>
+    <p class="proposed" id="ingestHint"></p>
+  </div>
+</div>
+
+<script id="session-data" type="application/json">__SESSION_JSON__</script>
+<script>
+const DATA = JSON.parse(document.getElementById("session-data").textContent);
+const C = DATA.candidates;
+
+// Only what a human must decide. Anything the pipeline can propose is shown
+// pre-filled below the question rather than asked again.
+const QUESTIONS = [
+  { key: "status", legend: "Decision", opts: ["keep", "reserve", "reject"] },
+  { key: "reaction", legend: "Your reaction", opts: ["lol", "wow", "smiled", "nothing", "context-missing"] },
+  { key: "contextLevel", legend: "Would a cold viewer follow it?",
+    opts: ["self-contained", "light-context", "deep-context"] },
+  { key: "contextCarrier", legend: "What carries the context?",
+    opts: ["dialogue", "title", "caption", "visual"] },
+  { key: "repetitionClass", legend: "Distinctive, or filler?",
+    opts: ["distinctive", "tactical-filler", "not-applicable"] },
+  { key: "arcIntent", legend: "Single arc, or compilation material?",
+    opts: ["single-arc", "compilation"] },
+  { key: "lane", legend: "Lane",
+    opts: ["peanut-bits", "squad-chaos", "wtf-game-moments", "peanut-plays", "the-mission", "reject"] },
+  { key: "coldOpenAccepted", legend: "Is the cold open acceptable?", opts: ["yes", "no"] },
+  { key: "rejectionReason", legend: "Why rejected?", onlyWhenReject: true,
+    opts: ["weak-premise", "no-payoff", "needs-context", "generic-gameplay", "bad-cut", "wrong-lane", "not-funny", "other"] },
+];
+
+const answers = C.map(() => ({}));
+// Elapsed ms from the clip appearing to the first touch of each field. This is
+// the measurement the session exists for: which question makes you stall.
+const timing = C.map(() => ({ shownAt: null, totalMs: 0, firstTouchMs: {} }));
+let at = 0;
+
+const el = (t, a = {}, kids = []) => {
+  const n = document.createElement(t);
+  for (const [k, v] of Object.entries(a)) {
+    if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const kid of kids) n.append(kid);
+  return n;
+};
+
+function laneGuess(c) {
+  const lanes = ["peanut-bits", "squad-chaos", "wtf-game-moments", "peanut-plays", "the-mission"];
+  return (c.categories || []).find((x) => lanes.includes(x)) || null;
+}
+
+function visible(q, i) {
+  return !q.onlyWhenReject || answers[i].status === "reject";
+}
+
+function missing(i) {
+  return QUESTIONS.filter((q) => visible(q, i) && answers[i][q.key] == null).map((q) => q.key);
+}
+
+function render() {
+  const stage = document.getElementById("stage");
+  const summary = document.getElementById("summary");
+  stage.textContent = "";
+
+  if (at >= C.length) {
+    summary.hidden = false;
+    document.getElementById("progress").textContent = `${C.length} of ${C.length}`;
+    renderSummary();
+    return;
+  }
+  summary.hidden = true;
+
+  const c = C[at];
+  const a = answers[at];
+  const t = timing[at];
+  if (t.shownAt == null) t.shownAt = performance.now();
+
+  document.getElementById("progress").textContent =
+    `${at + 1} of ${C.length} — ${Math.round(c.durationSec)}s`;
+
+  const card = el("div", { class: "card" });
+  card.append(el("video", { src: c.clip, controls: "", preload: "metadata" }));
+  if (c.description) card.append(el("p", { class: "desc", text: c.description }));
+
+  for (const q of QUESTIONS) {
+    if (!visible(q, at)) continue;
+    const fs = el("fieldset");
+    fs.append(el("legend", { text: q.legend }));
+    const row = el("div", { class: "opts" });
+    for (const opt of q.opts) {
+      const b = el("button", { type: "button", text: opt });
+      b.setAttribute("aria-pressed", String(a[q.key] === opt));
+      b.onclick = () => {
+        if (t.firstTouchMs[q.key] == null) {
+          t.firstTouchMs[q.key] = Math.round(performance.now() - t.shownAt);
+        }
+        a[q.key] = a[q.key] === opt ? null : opt;
+        if (q.key === "lane" || q.key === "status") render(); else repaint(fs, q, a);
+        paintNav();
+      };
+      row.append(b);
+    }
+    fs.append(row);
+
+    const p = c.proposals || {};
+    if (q.key === "contextCarrier" || q.key === "repetitionClass") {
+      fs.append(el("p", { class: "proposed", text: "No proposal — nothing in arc grounding speaks to this." }));
+    }
+    card.append(fs);
+  }
+
+  // What the pipeline proposed, for confirmation rather than re-entry.
+  const p = c.proposals || {};
+  const beats = p.beats;
+  const prop = el("fieldset");
+  prop.append(el("legend", { text: "Proposed by the pipeline" }));
+  const tbl = el("table");
+  const rows = [
+    ["evidence modality", p.primaryEvidenceModality ?? "—"],
+    ["visual proof required", p.visualProofRequired == null ? "—" : String(p.visualProofRequired)],
+    ["beats", beats ? `${beats.setupStartSec.toFixed(1)}s → ${beats.reactionEndSec.toFixed(1)}s` : "none"],
+    ["source window", `${c.startSec.toFixed(1)}s → ${c.endSec.toFixed(1)}s`],
+    ["recall routes", (c.recallRoutes || []).join(", ") || "—"],
+  ];
+  for (const [k, v] of rows) {
+    tbl.append(el("tr", {}, [el("th", { text: k }), el("td", { class: "num", text: v })]));
+  }
+  prop.append(tbl);
+  prop.append(el("p", { class: "proposed", text: "Override any of these in the notes if they are wrong." }));
+  card.append(prop);
+
+  const notes = el("fieldset");
+  notes.append(el("legend", { text: "Notes (optional)" }));
+  const ta = el("textarea", { rows: "2", placeholder: "Anything the fields above cannot say" });
+  ta.value = a.notes || "";
+  ta.oninput = () => { a.notes = ta.value; };
+  notes.append(ta);
+  card.append(notes);
+
+  const nav = el("div", { class: "nav" });
+  const prev = el("button", { class: "ghost", type: "button", text: "Previous" });
+  prev.disabled = at === 0;
+  prev.onclick = () => { bank(); at--; render(); };
+  const next = el("button", { type: "button", id: "next", text: at === C.length - 1 ? "Finish" : "Next" });
+  next.onclick = () => { bank(); at++; render(); };
+  const note = el("span", { id: "navnote" });
+  nav.append(prev, next, note);
+  card.append(nav);
+  stage.append(card);
+  paintNav();
+}
+
+function repaint(fs, q, a) {
+  for (const b of fs.querySelectorAll("button")) {
+    b.setAttribute("aria-pressed", String(a[q.key] === b.textContent));
+  }
+}
+
+function paintNav() {
+  const note = document.getElementById("navnote");
+  const next = document.getElementById("next");
+  if (!note || !next) return;
+  const left = missing(at);
+  if (left.length) {
+    note.className = "missing";
+    note.textContent = `${left.length} still unanswered: ${left.join(", ")}`;
+    next.disabled = true;
+  } else {
+    note.className = "done";
+    note.textContent = "Complete";
+    next.disabled = false;
+  }
+}
+
+function bank() {
+  const t = timing[at];
+  if (t.shownAt != null) {
+    t.totalMs += Math.round(performance.now() - t.shownAt);
+    t.shownAt = null;
+  }
+}
+
+function renderSummary() {
+  const body = document.getElementById("summaryBody");
+  body.textContent = "";
+  const tbl = el("table");
+  tbl.append(el("tr", {}, [
+    el("th", { text: "#" }), el("th", { text: "decision" }), el("th", { text: "reaction" }),
+    el("th", { text: "seconds" }), el("th", { text: "slowest question" }),
+  ]));
+  let total = 0;
+  const stalls = {};
+  C.forEach((c, i) => {
+    const t = timing[i];
+    total += t.totalMs;
+    const entries = Object.entries(t.firstTouchMs).sort((a, b) => b[1] - a[1]);
+    const slowest = entries.length ? entries[0][0] : "—";
+    if (entries.length) stalls[slowest] = (stalls[slowest] || 0) + 1;
+    tbl.append(el("tr", {}, [
+      el("td", { class: "num", text: c.slot }),
+      el("td", { text: answers[i].status || "—" }),
+      el("td", { text: answers[i].reaction || "—" }),
+      el("td", { class: "num", text: (t.totalMs / 1000).toFixed(0) }),
+      el("td", { text: slowest }),
+    ]));
+  });
+  body.append(tbl);
+  const perClip = (total / 1000 / C.length).toFixed(0);
+  const worst = Object.entries(stalls).sort((a, b) => b[1] - a[1])[0];
+  body.append(el("p", {
+    class: "desc",
+    text: `${(total / 60000).toFixed(1)} minutes for ${C.length} candidates — ${perClip}s each.`
+      + (worst ? ` Slowest question most often: ${worst[0]}.` : ""),
+  }));
+  document.getElementById("ingestHint").textContent =
+    `Then: npx tsx packages/clips/src/ingest-review-decision.ts --stream ${DATA.streamId}`;
+}
+
+document.getElementById("back").onclick = () => { at = C.length - 1; render(); };
+
+document.getElementById("save").onclick = () => {
+  const out = {
+    reviewedAt: new Date().toISOString(),
+    notes: `Labelled via label-session. ${C.length} blind-mixed candidates.`,
+    decisions: C.map((c, i) => {
+      const a = answers[i];
+      const p = c.proposals || {};
+      return {
+        rank: i + 1,
+        candidateId: c.candidateId,
+        momentId: c.momentId,
+        status: a.status,
+        lane: a.lane,
+        reaction: a.reaction,
+        contextLevel: a.contextLevel,
+        contextCarrier: a.contextCarrier,
+        repetitionClass: a.repetitionClass,
+        arcIntent: a.arcIntent,
+        coldOpenAccepted: a.coldOpenAccepted === "yes",
+        visualProofRequired: p.visualProofRequired ?? false,
+        primaryEvidenceModality: p.primaryEvidenceModality ?? "dialogue",
+        correctedBeats: p.beats ?? null,
+        rejectionReason: a.status === "reject" ? a.rejectionReason : null,
+        notes: a.notes || "",
+        // Kept for the prototype's own report, ignored by ingest.
+        _band: c.band,
+        _secondsSpent: Math.round(timing[i].totalMs / 1000),
+        _firstTouchMs: timing[i].firstTouchMs,
+      };
+    }),
+  };
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "review-decision.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// Pre-select the lane grounding already believes, so the common case is one
+// click to confirm rather than a fresh decision.
+C.forEach((c, i) => { answers[i].lane = laneGuess(c); });
+render();
+</script>
+</body>
+</html>

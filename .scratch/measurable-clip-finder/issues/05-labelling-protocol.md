@@ -25,6 +25,30 @@ overrides **five pipeline-proposed fields**: the beat map,
 a reject, `rejectionReason` complete the record. All seven eligibility fields
 stay mandatory; what changed is who produces them.
 
+**Amended 2026-11-02 while building the labelling surface
+([08](08-labelling-surface-prototype.md)): the pipeline can only honestly
+propose three of the five.** Checked against `arc-grounding.json` for all 181
+job-006 candidates:
+
+| Field | Can the pipeline propose it? |
+|---|---|
+| beat map | **yes** — 180 of 181 candidates carry a complete one |
+| `primaryEvidenceModality` | **yes** — `evidence.visualProof` is present for 14, transcript for all 181 |
+| `visualProofRequired` | **partly** — `gates.visualProof` is null for 167 of 181, so it falls back to whether the lane is a gameplay lane |
+| `contextCarrier` | **no** — `gates.contextIndependent` says context is missing, never which carrier would supply it |
+| `repetitionClass` | **no** — nothing in grounding distinguishes a distinctive bit from tactical filler |
+
+So a session asks for **six** judgements, not two: reaction, context level,
+context carrier, repetition class, arc intent and cold-open acceptance, plus a
+rejection reason on a reject. Lane is pre-selected from the candidate's
+categories, so it is usually one click to confirm.
+
+The page shows "No proposal — nothing in arc grounding speaks to this" under the
+two unproposable fields rather than defaulting them, because a confident default
+on a field nothing measures is how `coldOpenAccepted` became a field nobody read.
+
+Whether six is tolerable is what [10](10-run-labelling-sessions.md) measures.
+
 **The corpus reaches READY on the three streams already on disk.** No downloads.
 
 | Stream | Job | What the session does | Media |

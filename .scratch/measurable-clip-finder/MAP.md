@@ -80,6 +80,12 @@ ticket; `research` on every research ticket.
   Verified on the 10.7 GB source, which still carries the placeholder attribute
   while being readable — so the attribute check this ticket originally proposed
   would have falsely blocked it.
+- [08 — Prototype the labelling surface](issues/08-labelling-surface-prototype.md):
+  built; a `job-006` session of 8 blind-mixed candidates is cut and ready at
+  `data/clips/job-006-2026-07-16/label-session/index.html`. A simulated
+  completed session round-trips to 8 of 8 benchmark-eligible labels. The page
+  times each question to measure which judgement stalls. Its interactive flow
+  has not been executed yet.
 
 ## Not yet specified
 
