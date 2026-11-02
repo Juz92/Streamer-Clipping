@@ -20,7 +20,7 @@ import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 import { createLogger } from "@ltx/shared";
 import { findStreamDir } from "./lib/manifest.js";
-import { GAMEPLAY_CONTENT_LANES } from "./lib/content-lanes.js";
+import { CONTENT_LANES, GAMEPLAY_CONTENT_LANES } from "./lib/content-lanes.js";
 
 const log = createLogger("label-session");
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,23 +50,80 @@ interface RankedCandidate {
 interface GroundingRow {
   candidateId?: string;
   beats?: Beats;
-  gates?: { visualProof?: boolean | null };
+  gates?: {
+    arcComplete?: boolean | null;
+    visualProof?: boolean | null;
+    contextIndependent?: boolean | null;
+  };
   evidence?: { visualProof?: unknown };
   categories?: string[];
 }
 
-/** What the pipeline can honestly propose, and what it cannot. */
-interface Proposals {
-  beats: Beats | null;
-  primaryEvidenceModality: "dialogue" | "visual" | "hybrid" | null;
-  visualProofRequired: boolean | null;
-  /**
-   * Deliberately absent. Nothing in arc grounding speaks to which carrier
-   * supplies the missing context, or whether a bit is distinctive versus
-   * tactical filler, so proposing a value would be inventing one.
-   */
-  contextCarrier: null;
-  repetitionClass: null;
+/**
+ * Everything the gate needs except the one judgement only Justin can make.
+ *
+ * Each value carries the evidence it came from, and the page emits both so the
+ * corpus can record `labelSource: "manual-review+derived"` rather than claiming
+ * a human classified it. Weight a derived field below a human one.
+ */
+interface Derived {
+  values: Record<string, unknown>;
+  basis: Record<string, string>;
+}
+
+function derive(row: GroundingRow | undefined, candidate: RankedCandidate): Derived {
+  const gates = row?.gates ?? {};
+  const evidence = row?.evidence ?? {};
+  const categories = row?.categories ?? candidate.categories ?? [];
+  const hasVisual = evidence.visualProof != null && evidence.visualProof !== false;
+  const lane = categories.find((c) => (CONTENT_LANES as readonly string[]).includes(c)) ?? "peanut-bits";
+  const isGameplay = (GAMEPLAY_CONTENT_LANES as readonly string[]).includes(lane);
+
+  const values: Record<string, unknown> = {};
+  const basis: Record<string, string> = {};
+  const put = (key: string, value: unknown, why: string) => {
+    values[key] = value;
+    basis[key] = why;
+  };
+
+  put("lane", lane, `categories ${JSON.stringify(categories)} intersected with the content lanes`);
+
+  if (gates.contextIndependent === true) {
+    put("contextLevel", "self-contained", "arc-grounding gates.contextIndependent === true");
+  } else {
+    // light vs deep is a human distinction; light is the conservative choice and
+    // the basis says so rather than implying the depth was measured.
+    put("contextLevel", "light-context",
+      "arc-grounding gates.contextIndependent is not true; depth not determinable from evidence, light assumed");
+  }
+
+  put("primaryEvidenceModality", hasVisual ? (isGameplay ? "visual" : "hybrid") : "dialogue",
+    `arc-grounding evidence.visualProof ${hasVisual ? "present" : "absent"}; transcript present`);
+  put("contextCarrier", hasVisual ? "visual" : "dialogue",
+    `sole evidence modality is ${hasVisual ? "visual proof" : "transcript dialogue"}`);
+  put("visualProofRequired", hasVisual || isGameplay,
+    `lane ${lane} is ${isGameplay ? "" : "not "}a gameplay lane; visualProof evidence ${hasVisual ? "present" : "absent"}`);
+
+  if (categories.includes("reaction-gold")) {
+    put("repetitionClass", "distinctive",
+      "categorisation independently tagged reaction-gold, a selective marker (17 of 181 in the comparable job)");
+  } else {
+    // Not derivable. Term recurrence measures how much a stream discusses a
+    // topic, not whether a moment is a distinctive bit, so this stays unset and
+    // the candidate stays ineligible rather than guessed.
+    put("repetitionClass", null, "no independent basis; left for a human");
+  }
+
+  put("arcIntent", gates.arcComplete === true ? "single-arc" : "compilation",
+    `arc-grounding gates.arcComplete === ${String(gates.arcComplete)}`);
+
+  const beats = hasCompleteBeats(row?.beats) ? row?.beats : null;
+  put("coldOpenAccepted", beats?.flashSec != null,
+    beats?.flashSec != null
+      ? "arc-grounding placed a flash inside the arc"
+      : "arc-grounding placed no flash, so there is no cold open to accept");
+
+  return { values, basis };
 }
 
 function parseArgs(): { streamId: string; count: number } {
@@ -92,24 +149,6 @@ function hasCompleteBeats(beats: Beats | undefined | null): boolean {
     beats.setupStartSec, beats.premiseClearSec, beats.actionStartSec,
     beats.payoffStartSec, beats.payoffEndSec, beats.reactionEndSec,
   ].every((value) => Number.isFinite(value));
-}
-
-function propose(row: GroundingRow | undefined, candidate: RankedCandidate): Proposals {
-  const categories = row?.categories ?? candidate.categories ?? [];
-  const isGameplay = categories.some((c) => (GAMEPLAY_CONTENT_LANES as readonly string[]).includes(c));
-  const hasVisualEvidence = row?.evidence?.visualProof != null;
-
-  return {
-    beats: hasCompleteBeats(row?.beats) ? (row?.beats as Beats) : null,
-    // Grounding records visual evidence for only a small minority of
-    // candidates; everything else is carried by what was said.
-    primaryEvidenceModality: hasVisualEvidence ? (isGameplay ? "visual" : "hybrid") : "dialogue",
-    // gates.visualProof is null for most candidates, so fall back to the lane:
-    // a gameplay moment needs to show the thing it claims happened.
-    visualProofRequired: row?.gates?.visualProof ?? (isGameplay ? true : false),
-    contextCarrier: null,
-    repetitionClass: null,
-  };
 }
 
 /**
@@ -191,7 +230,11 @@ function main(): void {
 
   const candidates = picked.map((candidate, index) => {
     const slot = String(index + 1).padStart(2, "0");
-    const file = `${slot}.mp4`;
+    // Named by candidate, never by slot. The pick is shuffled and cutting is
+    // skipped when the file already exists, so a slot name silently remaps every
+    // clip to a different candidate on a re-run, recording reactions against the
+    // wrong clips. Caught exactly that way on 2026-11-02.
+    const file = `${candidate.momentId}.mp4`;
     const duration = Math.max(1, (candidate.endSec ?? 0) - (candidate.startSec ?? 0));
     const outPath = join(clipsDir, file);
     if (!existsSync(outPath)) {
@@ -213,7 +256,11 @@ function main(): void {
       // resolution can report which bands were kept.
       band: candidate.band,
       editorialStrength: candidate.editorialStrength ?? null,
-      proposals: propose(grounding.get(candidate.candidateId), candidate),
+      beats: (() => {
+        const row = grounding.get(candidate.candidateId);
+        return hasCompleteBeats(row?.beats) ? row?.beats : null;
+      })(),
+      derived: derive(grounding.get(candidate.candidateId), candidate),
     };
   });
 
