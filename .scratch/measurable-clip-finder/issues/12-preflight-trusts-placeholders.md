@@ -36,11 +36,14 @@ Done when:
   placeholder.
 - The failure message says *why*, naming the placeholder case specifically. A
   bare "cannot read" will send the next reader hunting for a permissions bug.
-- Consider checking the Windows file attributes directly for a precise message:
-  `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (0x400000),
-  `FILE_ATTRIBUTE_RECALL_ON_OPEN` (0x40000) and `FILE_ATTRIBUTE_OFFLINE`
-  (0x1000) all mark a dehydrated file. A read attempt is sufficient and
-  portable, so treat the attribute check as optional polish.
+- **Do not** test the Windows file attributes instead of reading. Measured on
+  2026-11-02 after OneDrive hydrated `job-006`'s source: the file reports
+  `cloud-only: True` from `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` while reads
+  succeed and ffprobe returns a correct 42458.22 s duration. OneDrive keeps the
+  placeholder flag set on a file it is now serving, so an attribute check would
+  **falsely block a perfectly readable file**. The attributes are useful only
+  for wording an error message after a read has already failed — never as the
+  test itself.
 - A test covers it. Simulating a placeholder is awkward, so a zero-byte file or
   a directory passed where a file is expected is an acceptable stand-in for the
   "exists but unreadable" branch.

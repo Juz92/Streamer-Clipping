@@ -50,3 +50,29 @@ tuning inside a frame the evidence says is wrong. Do not resolve this ticket by
 re-tuning those numbers.
 
 ## Comments
+
+### 2026-11-02 — the project's own only rendered short is 92 seconds
+
+Measured with ffprobe once OneDrive hydrated the media:
+
+| File | Dimensions | Duration |
+|---|---|---:|
+| `job-005/shorts/01-mary-poppins-...mp4` | 1080x1920 | **92.17 s** |
+| `job-005/raw-clips/01-mary-poppins-...mp4` | 1920x1080 | 92.17 s |
+| `job-005/raw-clips/02-sex-wheel-...mp4` | 1920x1080 | 42.08 s |
+| `job-005/raw-clips/03-bdsm-pal-freakout-...mp4` | 1920x1080 | 56.08 s |
+
+The single finished short this project has ever produced is **92 seconds long**,
+and `quality-gates.ts:37` rejects any rendered short over 60. The pipeline built
+something its own gate would throw away, and the gate never got the chance to
+say so because `job-005` stopped at `rendered` before any pre-render preflight
+ran against it.
+
+This is stronger evidence than the `hit-examples.json` argument already in this
+ticket. That one says the gate would reject other people's winners; this says
+the gate rejects *our own only output*. Taken together, the 60-second constant
+is contradicted by every piece of duration evidence the project holds.
+
+Note also that the render preserved duration exactly — raw and rendered are both
+92.1666 s — so nothing in the current trim or render path is enforcing the limit
+that the gate enforces. The two disagree, and the gate is the one that is wrong.
