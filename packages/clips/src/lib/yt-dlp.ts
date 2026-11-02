@@ -14,11 +14,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * every download dies. Climbing finds the real file from either layout, the way
  * node's own module resolution does.
  */
-export function findCookiesFile(startDir: string = HERE): string | null {
-  const explicit = process.env.YT_DLP_COOKIES?.trim();
-  if (explicit) return existsSync(explicit) ? explicit : null;
+export function findCookiesFile(startDir?: string): string | null {
+  // YT_DLP_COOKIES governs the default lookup only. A caller that names a
+  // directory is asking about that directory, and letting the environment
+  // override it makes the function untestable and surprising.
+  if (startDir === undefined) {
+    const explicit = process.env.YT_DLP_COOKIES?.trim();
+    if (explicit) return existsSync(explicit) ? explicit : null;
+  }
 
-  let dir = resolve(startDir);
+  let dir = resolve(startDir ?? HERE);
   for (let depth = 0; depth < 12; depth++) {
     const candidate = join(dir, "cookies.txt");
     if (existsSync(candidate)) return candidate;

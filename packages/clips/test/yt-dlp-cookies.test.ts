@@ -50,9 +50,19 @@ test("YT_DLP_COOKIES wins, and a bad override does not silently fall through", (
   }
 });
 
-test("the command carries --cookies when a file exists", () => {
+test("the command carries --cookies exactly when a file was found", () => {
+  // Asserts the relationship, not the environment. cookies.txt is gitignored,
+  // so it is present on a dev machine and absent on CI; an unconditional
+  // assertion here passed locally and failed on the runner.
   const cmd = ytDlpCommand();
-  // Run from this repo, where cookies.txt sits at the main checkout root.
   assert.match(cmd, /^python -m yt_dlp/);
-  assert.match(cmd, /--cookies "/, "a found cookies file must reach the command line");
+
+  const found = findCookiesFile();
+  if (found) {
+    assert.ok(cmd.includes(`--cookies "${found}"`),
+      "a found cookies file must reach the command line verbatim");
+  } else {
+    assert.ok(!cmd.includes("--cookies"),
+      "with no cookies file, no flag -- never a path that does not exist");
+  }
 });
