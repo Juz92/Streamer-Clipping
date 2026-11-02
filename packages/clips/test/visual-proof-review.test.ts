@@ -11,6 +11,11 @@ import {
   visualProofReviewPlanMatches,
   writeVisualProofTemplate,
 } from "../src/lib/visual-proof-review.js";
+import { ensureMediaToolsOnPath } from "../../shared/src/utils/media-tools.js";
+
+// These tests shell out to ffmpeg. Production code reaches it through the
+// @ltx/shared index, which a test importing a module directly never loads.
+ensureMediaToolsOnPath();
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
