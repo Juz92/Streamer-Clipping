@@ -9,16 +9,19 @@
  * Usage:
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id>
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --clips 1,3,5
+ *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --frame0-offsets 1:84,2:29.5,3:27
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --dry-run
  *   npx tsx packages/clips/src/generate-metadata.ts --stream <id> --force   # overwrite existing
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { createLogger } from "@ltx/shared";
 import { generateHookVariants, inferHookPattern } from "./lib/hook-variants.js";
 import { loadManifest } from "./lib/manifest.js";
+import { assertFrame0Package } from "./quality-gates.js";
 
 /** Load ANTHROPIC_API_KEY from .env file at project root if not already in env. */
 function loadEnvKey(): void {
@@ -49,18 +52,8 @@ const GLOBAL_YT_TAGS = [
   "The Burnt Peanut",
   "TheBurntPeanut",
   "Burnt Peanut",
-  "DailyPeanutClipsHighlights",
-  "gaming clips",
-  "gaming moments",
-  "gaming shorts",
-  "funny gaming",
-  "twitch clips",
-  "youtube gaming",
-  "streamer clips",
-  "gaming highlights",
-  "funny moments",
-  "gaming funny moments",
-  "shorts",
+  "BurntPeanut",
+  "Daily Peanut Clips",
 ];
 
 interface ClipSource {
@@ -83,7 +76,9 @@ interface GeneratedMeta {
   ytTitle: string;
   ytTitleVariantB?: string;
   ytTitleVariantC?: string;
+  primarySearchPhrase: string;
   frame0Hook: string;
+  frame0OffsetSec?: number;
   ytDescription: string;
   ytTags: string[];
   tiktokCaption: string;
@@ -100,6 +95,7 @@ interface ParsedMetadataResponse {
     ytTitle: string;
     ytTitleVariantB?: string;
     ytTitleVariantC?: string;
+    primarySearchPhrase?: string;
     frame0Hook?: string;
     ytDescription: string;
     ytTags: string[];
@@ -116,6 +112,7 @@ interface CliArgs {
   all: boolean;
   dryRun: boolean;
   force: boolean;
+  frame0Offsets: Map<number, number>;
 }
 
 function parseArgs(): CliArgs {
@@ -126,6 +123,7 @@ function parseArgs(): CliArgs {
     all: true,
     dryRun: false,
     force: false,
+    frame0Offsets: new Map(),
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -138,10 +136,27 @@ function parseArgs(): CliArgs {
       result.dryRun = true;
     } else if (args[i] === "--force") {
       result.force = true;
+    } else if (args[i] === "--frame0-offsets" && args[i + 1]) {
+      const value = args[++i];
+      if (!/^\d+:\d+(?:\.\d+)?(?:,\d+:\d+(?:\.\d+)?)*$/.test(value)) {
+        throw new Error("--frame0-offsets must use rank:seconds pairs, e.g. 1:84,2:29.5");
+      }
+      for (const pair of value.split(",")) {
+        const [rank, offset] = pair.split(":").map(Number);
+        result.frame0Offsets.set(rank, offset);
+      }
     }
   }
 
   return result;
+}
+
+function getMediaDuration(mediaPath: string): number {
+  const duration = Number(execFileSync("ffprobe", [
+    "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", mediaPath,
+  ], { encoding: "utf-8" }).trim());
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error(`Cannot read media duration: ${mediaPath}`);
+  return duration;
 }
 
 /** Derive a URL-friendly slug from a short filename like "01-hutch-lose-some-weight.mp4" */
@@ -167,10 +182,9 @@ function inferGame(title: string): string {
   return "Gaming";
 }
 
-/** Load clips from notebooklm-moments.json or unified-moments.json */
-function loadClipSources(jobDir: string, shortsDir: string, filter: number[]): ClipSource[] {
-  // Find rendered shorts to determine clip numbers
-  const shortFiles = readdirSync(shortsDir)
+/** Load clips from approved raw media plus notebooklm-moments.json or unified-moments.json. */
+function loadClipSources(jobDir: string, mediaDir: string, filter: number[]): ClipSource[] {
+  const mediaFiles = readdirSync(mediaDir)
     .filter((f) => f.endsWith(".mp4") && /^\d+/.test(f))
     .sort();
 
@@ -181,6 +195,8 @@ function loadClipSources(jobDir: string, shortsDir: string, filter: number[]): C
 
   let moments: Array<{
     id?: string;
+    momentId?: string;
+    candidateId?: string;
     rank?: number;
     description: string;
     categories: string[];
@@ -207,20 +223,40 @@ function loadClipSources(jobDir: string, shortsDir: string, filter: number[]): C
     moments = JSON.parse(readFileSync(momentsPath, "utf-8"));
     log.info(`Loaded ${moments.length} picks from moments.json (scorer-only)`);
   }
-  if (moments.length === 0) {
-    log.error("No moments file found (notebooklm-moments.json, unified-moments.json, or moments.json)");
+  const groundedPath = join(jobDir, "grounded-ranked-moments.json");
+  const groundedMoments = existsSync(groundedPath)
+    ? JSON.parse(readFileSync(groundedPath, "utf-8")) as typeof moments
+    : [];
+  if (groundedMoments.length > 0) {
+    log.info(`Loaded ${groundedMoments.length} canonical candidates from grounded-ranked-moments.json`);
+  }
+  if (moments.length === 0 && groundedMoments.length === 0) {
+    log.error("No canonical or legacy moments file found");
     process.exit(1);
   }
 
+  const trimPath = join(jobDir, "trim-results.json");
+  const trimResults = existsSync(trimPath)
+    ? JSON.parse(readFileSync(trimPath, "utf-8")) as {
+        approved?: Array<{ rank?: number; candidateId?: string; momentId?: string }>;
+      }
+    : {};
+  const trimByRank = new Map((trimResults.approved ?? []).map((entry) => [entry.rank, entry]));
+  const groundedByCandidateId = new Map(groundedMoments.map((moment) => [moment.candidateId, moment]));
+  const groundedByMomentId = new Map(groundedMoments.map((moment) => [moment.momentId, moment]));
+
   const sources: ClipSource[] = [];
 
-  for (let i = 0; i < shortFiles.length; i++) {
-    const filename = shortFiles[i];
-    const clipNum = i + 1;
+  for (let i = 0; i < mediaFiles.length; i++) {
+    const filename = mediaFiles[i];
+    const clipNum = Number(filename.match(/^(\d+)/)?.[1] ?? i + 1);
 
     if (filter.length > 0 && !filter.includes(clipNum)) continue;
 
-    const moment = moments[i];
+    const trim = trimByRank.get(clipNum);
+    const moment = (trim?.candidateId ? groundedByCandidateId.get(trim.candidateId) : undefined)
+      ?? (trim?.momentId ? groundedByMomentId.get(trim.momentId) : undefined)
+      ?? moments[i];
     if (!moment) {
       log.warn(`No moment data for clip ${clipNum} (${filename}) — skipping`);
       continue;
@@ -237,7 +273,7 @@ function loadClipSources(jobDir: string, shortsDir: string, filter: number[]): C
       humorPotential: moment.humorPotential ?? 0,
       setupNeeded: moment.setupNeeded ?? false,
       viralScore: moment.viralScore ?? moment.viralityScore ?? 50,
-      durationSec: moment.durationSec,
+      durationSec: getMediaDuration(join(mediaDir, filename)),
     });
   }
 
@@ -275,25 +311,23 @@ CHANNEL:
 - Date: ${streamDate}
 - Comedy style: friend-group roasts, absurd one-liners, crude humor, competitive meltdowns
 
-YOUTUBE SHORTS ALGORITHM RULES (non-negotiable):
-1. Titles: under 70 chars. Humor-first: prefer direct funny quotes, then "WTF just happened" shock hooks, then payoff-first titles. 1-2 words in CAPS max.
-   - BAD: "Peanut plays Rust and gets mad"
-   - BAD: "Odd conversation at the gambling table"
-   - GOOD: "he blamed him for the plane not reaching ALTITUDE 💀"
-   - GOOD: "WTF just happened to Peanut's voice?"
-2. NO "subscribe", "like", "smash the bell" language anywhere. Trust Score killer.
-3. Channel links in descriptions are fine and encouraged.
-4. Broad-appeal clips: mark postFirst=true. Non-gamers understanding = viral faster on new channels.
-5. One clip per day from each batch — do NOT say this in the content though.
-6. Tags: 33-37 total. Global channel tags + game tags + clip-specific tags.
+YOUTUBE SHORTS PACKAGING RULES (non-negotiable):
+1. Titles: accurate, concrete and succinct (target 35-60 characters). Put the important entity/action near the front. Limit ALL CAPS and emoji. Never stuff hashtags into the title.
+2. Choose one primarySearchPhrase that a real viewer might search. Use it naturally in the title or first description sentence; never repeat it mechanically.
+3. The frame0Hook must use an explicit slash to create exactly two lines, with no more than three visible words per line. It must accurately promise the payoff.
+4. NO "subscribe", "like", or "smash the bell" language.
+5. Broad-appeal clips may set postFirst=true, but cadence is not a ranking requirement.
+6. Tags: 5-10 relevant tags total after creator tags are merged. Use the game/topic, creator variants and genuine misspellings; generic tag stuffing is forbidden.
+7. Do not invent an expression timestamp. The operator supplies frame0OffsetSec separately after visual contact-sheet review.
 
-DESCRIPTION FORMAT (each clip, 2-4 lines total including links):
-Line 1-2: 1-2 punchy sentences capturing the moment. Lead with the punchline energy.
+DESCRIPTION FORMAT:
+Line 1: a unique sentence naming the creator/topic and exact event, using the primary search phrase naturally.
+Line 2: one short context sentence that makes the clip understandable.
 Blank line
 "Watch The Burnt Peanut live: https://www.youtube.com/@TheBurntPeanut"
-"Clips: https://www.youtube.com/@DailyPeanutClipsHighlights"
+"More Daily Peanut clips: https://www.youtube.com/@DailyPeanutClipsHighlights"
 Blank line
-3-5 hashtags: always include #shorts #gaming #${game.toLowerCase().replace(/\s+/g, "")} + clip-specific
+2-3 relevant hashtags in the description only; always include #Shorts plus the creator/game where accurate.
 
 TIKTOK CAPTION: conversational, 1-2 sentences + 3-5 inline hashtags + 1-2 emoji. Under 150 chars.
 
@@ -311,11 +345,12 @@ Return a JSON object with this exact structure:
   "clips": [
     {
       "clipNum": 1,
-      "ytTitle": "curiosity hook title under 70 chars with CAPS emphasis",
-      "ytTitleVariantB": "direct funny quote title under 70 chars, if genuinely funny",
-      "ytTitleVariantC": "WTF/shock/payoff hook title under 70 chars",
-      "frame0Hook": "2-6 word thumbnail hook for the first frame. Use slash to split lines, e.g. LOVE ISLAND / BUT NORMAL",
-      "ytDescription": "full description with links and hashtags",
+      "ytTitle": "accurate concrete title under 60 chars",
+      "ytTitleVariantB": "alternate direct-quote title under 60 chars, if genuinely funny",
+      "ytTitleVariantC": "alternate accurate title under 60 chars",
+      "primarySearchPhrase": "one natural search phrase for this exact clip",
+      "frame0Hook": "exactly two short lines separated by /, maximum 3 words per line",
+      "ytDescription": "full unique description with links and 2-3 hashtags",
       "ytTags": ["tag1", "tag2", ...],
       "tiktokCaption": "caption with #hashtags and emoji",
       "reelsCaption": "punchy caption #hashtags",
@@ -379,7 +414,9 @@ function buildUploadMetadataMd(
       lines.push(`**Title Variant C:** ${clip.ytTitleVariantC}`);
     }
     lines.push(`**Hook Pattern:** ${clip.hookPattern}`);
+    lines.push(`**Primary Search Phrase:** ${clip.primarySearchPhrase}`);
     lines.push(`**Frame0 Hook:** ${clip.frame0Hook}`);
+    lines.push(`**Frame0 Expression Offset:** ${clip.frame0OffsetSec == null ? "REQUIRED BEFORE RENDER" : `${clip.frame0OffsetSec.toFixed(2)}s`}`);
     lines.push("");
     lines.push("**YouTube Description:**");
     lines.push(clip.ytDescription);
@@ -452,26 +489,6 @@ function buildFallbackMetadata(clips: ClipSource[], game: string): ParsedMetadat
   const fallbackTags = [
     "funny gaming clips",
     "streamer funny moments",
-    "streamer rage",
-    "gaming rage",
-    "friend group gaming",
-    "gaming banter",
-    "gaming comedy",
-    "live stream moments",
-    "viral gaming shorts",
-    "funny shorts",
-    "gamer moments",
-    "stream highlights",
-    "daily gaming clips",
-    "peanut clips",
-    "burnt peanut clips",
-    "multiplayer funny moments",
-    "gaming fails",
-    "gaming chaos",
-    "holdfast funny moments",
-    "random games funny moments",
-    "australian gaming",
-    "youtube shorts gaming",
   ];
 
   const ordered = [...clips].sort((a, b) => {
@@ -489,16 +506,21 @@ function buildFallbackMetadata(clips: ClipSource[], game: string): ParsedMetadat
       const variantB = clipTitle(c.description || title);
       const variantC = clipTitle(`${title} got out of hand`);
       const frame0Hook = frameHookFromTitle(title);
-      const hashtags = `#shorts #gaming #${game.toLowerCase().replace(/\s+/g, "")} #funnygaming`;
-      const description = `${title}.\n\nWatch The Burnt Peanut live: https://www.youtube.com/@TheBurntPeanut\nClips: https://www.youtube.com/@DailyPeanutClipsHighlights\n\n${hashtags}`;
+      const primarySearchPhrase = game === "Gaming"
+        ? "Burnt Peanut funny gaming moment"
+        : `Burnt Peanut ${game} funny moment`;
+      const gameHashtag = game === "Gaming" ? "Gaming" : game.replace(/\s+/g, "");
+      const hashtags = `#Shorts #BurntPeanut #${gameHashtag}`;
+      const description = `The Burnt Peanut and friends turn ${title.toLowerCase()} into a ridiculous gaming moment.\n${primarySearchPhrase}.\n\nWatch The Burnt Peanut live: https://www.youtube.com/@TheBurntPeanut\nMore Daily Peanut clips: https://www.youtube.com/@DailyPeanutClipsHighlights\n\n${hashtags}`;
       return {
         clipNum: c.clipNum,
         ytTitle: title,
         ytTitleVariantB: variantB,
         ytTitleVariantC: variantC,
+        primarySearchPhrase,
         frame0Hook,
         ytDescription: description,
-        ytTags: [...fallbackTags, ...c.categories.slice(0, 8)],
+        ytTags: [...fallbackTags, ...c.categories.slice(0, 3)],
         tiktokCaption: `${clipTitle(title, 95)} ${hashtags}`,
         reelsCaption: `${clipTitle(title, 70)} #shorts #gaming`,
         pinnedComment: "Which mate got cooked the worst here?",
@@ -520,16 +542,32 @@ async function main(): Promise<void> {
 
   const manifest = loadManifest(args.streamId);
   const jobDir = manifest.jobDir;
+  const rawClipsDir = join(jobDir, "raw-clips");
   const shortsDir = join(jobDir, "shorts");
+  const mediaDir = existsSync(rawClipsDir) ? rawClipsDir : shortsDir;
   const outPath = join(jobDir, "upload-metadata.md");
   const outJsonPath = join(jobDir, "upload-metadata.json");
+  const existingFrame0ByRank = new Map<number, number>();
+  if (existsSync(outJsonPath)) {
+    try {
+      const existing = JSON.parse(readFileSync(outJsonPath, "utf-8")) as {
+        items?: Array<{ rank?: number; clipNum?: number; frame0OffsetSec?: number }>;
+      };
+      for (const item of existing.items ?? []) {
+        const rank = item.rank ?? item.clipNum;
+        if (rank && typeof item.frame0OffsetSec === "number") existingFrame0ByRank.set(rank, item.frame0OffsetSec);
+      }
+    } catch {
+      // Invalid old metadata will be replaced when --force is explicit.
+    }
+  }
 
-  if (!existsSync(shortsDir)) {
-    log.error(`No shorts/ directory at ${shortsDir}. Run render-fast first.`);
+  if (!existsSync(mediaDir)) {
+    log.error(`No approved raw clips or rendered shorts found in ${jobDir}. Run trim first.`);
     process.exit(1);
   }
 
-  if (existsSync(outPath) && !args.force) {
+  if (existsSync(outPath) && !args.force && args.frame0Offsets.size === 0) {
     log.warn(
       `upload-metadata.md already exists at ${outPath}. Use --force to regenerate.`,
     );
@@ -542,11 +580,23 @@ async function main(): Promise<void> {
   log.info(`Stream: ${manifest.title}`);
   log.info(`Game: ${game} | Date: ${streamDate}`);
 
-  const clips = loadClipSources(jobDir, shortsDir, args.all ? [] : args.clips);
+  const clips = loadClipSources(jobDir, mediaDir, args.all ? [] : args.clips);
 
   if (clips.length === 0) {
     log.error("No clips found to generate metadata for.");
     process.exit(1);
+  }
+
+  const frame0ByRank = new Map(existingFrame0ByRank);
+  args.frame0Offsets.forEach((offset, rank) => frame0ByRank.set(rank, offset));
+  for (const clip of clips) {
+    const offset = frame0ByRank.get(clip.clipNum);
+    if (typeof offset !== "number" || !Number.isFinite(offset) || offset < 0 || offset >= clip.durationSec) {
+      throw new Error(
+        `Clip ${clip.clipNum} needs an explicit frame0 offset inside 0-${clip.durationSec.toFixed(2)}s. ` +
+        `Select it from the expression contact sheet and pass --frame0-offsets ${clip.clipNum}:SECONDS.`,
+      );
+    }
   }
 
   log.info(`Generating metadata for ${clips.length} clips via Claude API...`);
@@ -617,21 +667,13 @@ async function main(): Promise<void> {
     const source = clips.find((c) => c.clipNum === g.clipNum);
     const slug = source?.slug ?? `clip-${g.clipNum}`;
 
-    // Merge global tags + game tags + generated tags, dedup
+    // Prefer the real clip/topic terms; creator spelling variants fill the remainder.
     const allTags = [
-      ...GLOBAL_YT_TAGS,
-      ...(game !== "Gaming"
-        ? [
-            game,
-            game.toLowerCase(),
-            `${game.toLowerCase()} funny moments`,
-            `${game.toLowerCase()} gameplay`,
-            `${game.toLowerCase()} highlights`,
-          ]
-        : []),
       ...g.ytTags,
+      ...(game !== "Gaming" ? [game, `${game.toLowerCase()} funny moments`] : []),
+      ...GLOBAL_YT_TAGS,
     ];
-    const deduped = Array.from(new Set(allTags.map((t) => t.trim()).filter(Boolean)));
+    const deduped = Array.from(new Set(allTags.map((t) => t.trim()).filter(Boolean))).slice(0, 10);
 
     // Generate archetype-aware title variants as fallback/enrichment
     const archetype = inferArchetypeFromCategories(source?.categories ?? []);
@@ -654,16 +696,29 @@ async function main(): Promise<void> {
       ytTitle: g.ytTitle || variants.titleA,
       ytTitleVariantB: g.ytTitleVariantB || variants.titleB,
       ytTitleVariantC: g.ytTitleVariantC || variants.titleC,
+      primarySearchPhrase: g.primarySearchPhrase || (game === "Gaming"
+        ? "Burnt Peanut funny gaming moment"
+        : `Burnt Peanut ${game} funny moment`),
       frame0Hook,
+      frame0OffsetSec: frame0ByRank.get(g.clipNum),
       ytDescription: g.ytDescription,
       ytTags: deduped,
       tiktokCaption: g.tiktokCaption,
       reelsCaption: g.reelsCaption,
-      pinnedComment: g.pinnedComment || "Which mate is getting cooked next?",
+      pinnedComment: g.pinnedComment || `Which part of "${clipTitle(g.ytTitle, 50)}" got you?`,
       postFirst: g.postFirst ?? false,
       hookPattern,
     };
   });
+
+  assertFrame0Package(
+    generatedClips.map((clip) => ({
+      rank: clip.clipNum,
+      frame0Hook: clip.frame0Hook,
+      frame0OffsetSec: clip.frame0OffsetSec,
+    })),
+    Object.fromEntries(clips.map((clip) => [clip.clipNum, clip.durationSec])),
+  );
 
   // Validate posting order — fill in any missing clip numbers
   const allNums = generatedClips.map((c) => c.clipNum);
@@ -682,6 +737,7 @@ async function main(): Promise<void> {
 
   writeFileSync(outPath, md, "utf-8");
   writeFileSync(outJsonPath, JSON.stringify({
+    version: 2,
     generatedAt: new Date().toISOString(),
     streamId: args.streamId,
     streamTitle: manifest.title,
@@ -695,7 +751,9 @@ async function main(): Promise<void> {
       ytTitle: clip.ytTitle,
       ytTitleVariantB: clip.ytTitleVariantB,
       ytTitleVariantC: clip.ytTitleVariantC,
+      primarySearchPhrase: clip.primarySearchPhrase,
       frame0Hook: clip.frame0Hook,
+      frame0OffsetSec: clip.frame0OffsetSec,
       ytDescription: clip.ytDescription,
       ytTags: clip.ytTags,
       tiktokCaption: clip.tiktokCaption,

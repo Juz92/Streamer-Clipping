@@ -2,6 +2,10 @@ import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "fs";
 import { extname, join, relative } from "path";
 import { fileURLToPath } from "url";
+import { ensureMediaToolsOnPath } from "@ltx/shared";
+
+// ffmpeg may be installed but unreachable on PATH; add a fallback before probing.
+ensureMediaToolsOnPath();
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const OUT_DIR = join(ROOT, "packages", "remotion", ".tmp", "qa");
 const FRAMES_DIR = join(OUT_DIR, "contact-frames");

@@ -57,7 +57,8 @@ export interface ComputeAutoTrimOptions {
 }
 
 /* ── Constants (tuned for viral Shorts) ── */
-const DEFAULT_MAX_DRIFT = 5;           // was 3 — natural ends often 4-5s after signal
+const DEFAULT_MAX_DRIFT = 5;           // start boundaries should stay close to the grounded setup
+const DEFAULT_END_MAX_DRIFT = 12;      // active sentences often finish 6-12s after the signal
 const DEFAULT_MIN_SILENCE = 600;       // was 300 — 600ms catches true pauses, not breaths
 const FLASH_VAR_MIN = 1.0;             // quick reaction flashes
 const FLASH_VAR_MAX = 4.0;             // visual gag / multi-word punchline
@@ -252,14 +253,31 @@ export function snapEndBoundaryEnhanced(
   if (words.length === 0) return { sec: targetSec, source: "signal", reason: "signal" };
 
   const targetMs = targetSec * 1000;
-  const lo = targetMs - maxDriftSec * 1000;
   const hi = targetMs + maxDriftSec * 1000;
+  const activeWord = words.some((word) => word.startMs < targetMs && word.endMs > targetMs);
+  const previousWord = [...words].reverse().find((word) => word.endMs <= targetMs);
+  if (
+    !activeWord
+    && previousWord
+    && targetMs - previousWord.endMs <= minSilenceMs
+    && isRealSentenceEnd(previousWord.word)
+  ) {
+    return { sec: targetSec, source: "punctuation", reason: "natural-completion" };
+  }
 
   // 1. Emotional resolution: end within 1s of the last peak (laugh/shock/chat eruption)
   if (lastPeakSec != null) {
     const lastPeakMs = lastPeakSec * 1000;
     // Find the word that ends closest to but after the peak
-    const resolutionWords = words.filter((w) => w.endMs >= lastPeakMs && w.endMs <= lastPeakMs + 1500 && w.endMs <= hi);
+    const resolutionWords = words.filter((w, index) => {
+      const next = words[index + 1];
+      const naturalStop = isRealSentenceEnd(w.word)
+        || (next != null && next.startMs - w.endMs >= minSilenceMs);
+      return naturalStop
+        && w.endMs >= Math.max(lastPeakMs, targetMs)
+        && w.endMs <= lastPeakMs + 1500
+        && w.endMs <= hi;
+    });
     if (resolutionWords.length > 0) {
       resolutionWords.sort((a, b) => Math.abs(a.endMs - lastPeakMs) - Math.abs(b.endMs - lastPeakMs));
       return { sec: resolutionWords[0].endMs / 1000, source: "emotional-resolution", reason: "natural-completion" };
@@ -268,7 +286,7 @@ export function snapEndBoundaryEnhanced(
 
   // 2. Punctuation (with abbreviation filtering)
   const punct = words.filter(
-    (w) => w.endMs >= lo && w.endMs <= hi && isRealSentenceEnd(w.word),
+    (w) => w.endMs >= targetMs && w.endMs <= hi && isRealSentenceEnd(w.word),
   );
   if (punct.length > 0) {
     punct.sort((a, b) => Math.abs(a.endMs - targetMs) - Math.abs(b.endMs - targetMs));
@@ -279,7 +297,7 @@ export function snapEndBoundaryEnhanced(
   const silenceCandidates: number[] = [];
   for (let i = 0; i < words.length - 1; i++) {
     const gap = words[i + 1].startMs - words[i].endMs;
-    if (gap >= minSilenceMs && words[i].endMs >= lo && words[i].endMs <= hi) {
+    if (gap >= minSilenceMs && words[i].endMs >= targetMs && words[i].endMs <= hi) {
       silenceCandidates.push(words[i].endMs);
     }
   }
@@ -304,13 +322,12 @@ export function snapStartBoundaryEnhanced(
 
   const targetMs = targetSec * 1000;
   const lo = targetMs - maxDriftSec * 1000;
-  const hi = targetMs + maxDriftSec * 1000;
 
   // 1. Silence gap (clean onset)
   const silenceStarts: number[] = [];
   for (let i = 1; i < words.length; i++) {
     const gap = words[i].startMs - words[i - 1].endMs;
-    if (gap >= minSilenceMs && words[i].startMs >= lo && words[i].startMs <= hi) {
+    if (gap >= minSilenceMs && words[i].startMs >= lo && words[i].startMs <= targetMs) {
       silenceStarts.push(words[i].startMs);
     }
   }
@@ -323,7 +340,7 @@ export function snapStartBoundaryEnhanced(
   const afterPunct: number[] = [];
   for (let i = 1; i < words.length; i++) {
     const prev = stripTrailingJunk(words[i - 1].word);
-    if (isRealSentenceEnd(prev) && words[i].startMs >= lo && words[i].startMs <= hi) {
+    if (isRealSentenceEnd(prev) && words[i].startMs >= lo && words[i].startMs <= targetMs) {
       afterPunct.push(words[i].startMs);
     }
   }
@@ -524,15 +541,16 @@ export function computeAutoTrimEnhanced(opts: ComputeAutoTrimOptions): PaddedWin
   let endSec = contentTargetEnd;
   let endSource: PaddedWindow["notes"]["endSnap"] = "signal";
   let endReason: PaddedWindow["notes"]["endReason"] = "signal";
+  const endMaxDriftSec = opts.maxDriftSec ?? DEFAULT_END_MAX_DRIFT;
   const speakerEnd = availableTurns.length
-    ? snapToSpeakerEnd(availableTurns, contentTargetEnd, maxDriftSec)
+    ? snapToSpeakerEnd(availableTurns, contentTargetEnd, endMaxDriftSec)
     : null;
   if (speakerEnd != null) {
     endSec = speakerEnd;
     endSource = "speaker";
     endReason = "natural-completion";
   } else {
-    const fallback = snapEndBoundaryEnhanced(words, contentTargetEnd, maxDriftSec, minSilenceMs, lastPeakSec);
+    const fallback = snapEndBoundaryEnhanced(words, contentTargetEnd, endMaxDriftSec, minSilenceMs, lastPeakSec);
     endSec = fallback.sec;
     endSource = fallback.source;
     endReason = fallback.reason;
@@ -550,7 +568,7 @@ export function computeAutoTrimEnhanced(opts: ComputeAutoTrimOptions): PaddedWin
 
   // Dead-air trim
   const trimmed = trimDeadAir(contentEnd, contentStart, lastPeakSec, 8);
-  if (trimmed.end < contentEnd && trimmed.end > contentStart + 5) {
+  if (endReason !== "natural-completion" && trimmed.end < contentEnd && trimmed.end > contentStart + 5) {
     contentEnd = trimmed.end;
     endReason = trimmed.reason;
   }
@@ -623,7 +641,7 @@ export function snapToSpeakerStart(
   if (turns.length === 0) return null;
   const candidates: number[] = [];
   for (const t of turns) {
-    if (Math.abs(t.start - targetSec) <= maxDriftSec) candidates.push(t.start);
+    if (t.start <= targetSec && Math.abs(t.start - targetSec) <= maxDriftSec) candidates.push(t.start);
   }
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => Math.abs(a - targetSec) - Math.abs(b - targetSec));
@@ -638,7 +656,7 @@ export function snapToSpeakerEnd(
   if (turns.length === 0) return null;
   const candidates: number[] = [];
   for (const t of turns) {
-    if (Math.abs(t.end - targetSec) <= maxDriftSec) candidates.push(t.end);
+    if (t.end >= targetSec && Math.abs(t.end - targetSec) <= maxDriftSec) candidates.push(t.end);
   }
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => Math.abs(a - targetSec) - Math.abs(b - targetSec));

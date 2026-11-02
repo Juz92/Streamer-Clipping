@@ -36,11 +36,18 @@ import { computeAutoTrim } from "./lib/enhanced-auto-trim.js";
 import { finalizeClip, remapWhisperForFinalized } from "./lib/trim-finalize.js";
 import { diarizeClip, isPyannoteAvailable, type SpeakerTurn } from "./lib/diarize.js";
 import { loadFeedback, getDurationSweetSpot } from "./lib/feedback.js";
+import {
+  canonicalizeMoment,
+  chooseCanonicalMomentSource,
+  loadValidatedGroundedPromoted,
+} from "./lib/candidate-contract.js";
+import { applyGroundedQuality, type GroundedQuality } from "./lib/grounded-trim.js";
 
 const log = createLogger("trim");
 
 interface ClipMeta {
   rank: number;
+  candidateId: string;
   momentId?: string;
   sourceStartSec?: number;
   sourceEndSec?: number;
@@ -58,6 +65,31 @@ interface ClipMeta {
   initialFlashEnd?: number;
   initialContentStart?: number;
   initialContentEnd?: number;
+}
+
+interface ExistingTrimIdentity {
+  rank: number;
+  candidateId: string;
+  momentId: string;
+  clipFile: string;
+}
+
+function loadExistingTrimIdentities(streamDir: string, jobId: string): ExistingTrimIdentity[] {
+  const path = join(streamDir, "trim-results.json");
+  if (!existsSync(path)) return [];
+  const report = JSON.parse(readFileSync(path, "utf-8")) as {
+    approved?: Array<{ rank: number; candidateId?: string; momentId?: string; clipFile: string }>;
+  };
+  return (report.approved ?? []).map((entry) => {
+    if (!entry.momentId) throw new Error(`Trim clip ${entry.clipFile} has no momentId`);
+    const identity = canonicalizeMoment(jobId, entry);
+    return {
+      rank: entry.rank,
+      clipFile: entry.clipFile,
+      candidateId: identity.candidateId,
+      momentId: identity.momentId,
+    };
+  });
 }
 
 async function main() {
@@ -93,6 +125,7 @@ async function main() {
   }
 
   const manifest = loadManifest(streamId);
+  const jobId = basename(manifest.jobDir);
   const rawClipsDir = join(streamDir, "raw-clips");
   const unifiedPath = join(streamDir, "unified-moments.json");
   const nlmPath = join(streamDir, "notebooklm-moments.json");
@@ -141,8 +174,15 @@ async function main() {
       thumbnailSec?: number;
     }> = JSON.parse(readFileSync(nlmPath, "utf-8"));
 
-    if (nlmMoments.length === 0) {
-      log.error("notebooklm-moments.json is empty — no picks to trim");
+    const qualityByCandidate = loadPickQuality(streamDir);
+    const groundedNlmMoments = nlmMoments.filter((moment) => {
+      const identity = canonicalizeMoment(jobId, moment);
+      const quality = qualityByCandidate.get(identity.candidateId);
+      if (!quality) throw new Error(`No pick-quality entry for ${identity.candidateId}`);
+      return isGroundedPick(quality);
+    });
+    if (groundedNlmMoments.length === 0) {
+      log.error("No source-grounded picks to trim");
       process.exit(1);
     }
 
@@ -151,11 +191,21 @@ async function main() {
     mkdirSync(paddedClipsDir, { recursive: true });
     serveDir = paddedClipsDir;
 
-    const PAD_SEC = 10;
+    const PAD_SEC = 15;
     const streamPath = manifest.videoPath.replace(/\\/g, "/");
 
-    for (let i = 0; i < nlmMoments.length; i++) {
-      const m = nlmMoments[i];
+    for (let i = 0; i < groundedNlmMoments.length; i++) {
+      const m = groundedNlmMoments[i];
+      const identity = canonicalizeMoment(jobId, m);
+      const quality = qualityByCandidate.get(identity.candidateId)!;
+      const grounded = applyGroundedQuality({
+        candidateId: identity.candidateId,
+        startSec: m.startSec,
+        endSec: m.endSec,
+        flashSec: quality.flashSec,
+      }, quality);
+      const sourceStartSec = grounded.startSec;
+      const sourceEndSec = grounded.endSec;
       const rank = i + 1;
       const slug = (m.hook || m.description || `clip-${rank}`)
         .replace(/[^a-zA-Z0-9 ]/g, "")
@@ -164,10 +214,11 @@ async function main() {
         .toLowerCase();
       const fileName = `${String(rank).padStart(2, "0")}-${slug}.mp4`;
       const outPath = join(paddedClipsDir, fileName);
+      const paddedOrigin = Math.max(0, sourceStartSec - PAD_SEC);
 
       if (!existsSync(outPath)) {
-        const paddedStart = Math.max(0, m.startSec - PAD_SEC);
-        const paddedDur = (m.endSec - m.startSec) + (PAD_SEC * 2);
+        const paddedStart = paddedOrigin;
+        const paddedDur = (sourceEndSec - sourceStartSec) + (PAD_SEC * 2);
         log.info(`Extracting padded clip ${rank}: ${paddedStart}s +${paddedDur}s → ${fileName}`);
         try {
           execSync(
@@ -180,12 +231,10 @@ async function main() {
         }
       }
 
-      // Compute initial trim values from enrichment data
-      // coldOpen → flash start, naturalEnd → content end
-      const contentStart = m.coldOpenSec ? Math.max(0, m.coldOpenSec - (m.startSec - PAD_SEC)) : PAD_SEC;
-      const contentEnd = m.naturalEndSec ? m.naturalEndSec - (m.startSec - PAD_SEC) : m.endSec - m.startSec + PAD_SEC;
-      // Flash: 2s window around the peak (startSec is the anchor)
-      const flashAnchor = m.startSec - (m.startSec - PAD_SEC); // = PAD_SEC
+      // Initial UI values are clip-relative projections of the grounded Beat Map.
+      const contentStart = sourceStartSec - paddedOrigin;
+      const contentEnd = sourceEndSec - paddedOrigin;
+      const flashAnchor = (grounded.flashSec ?? sourceStartSec) - paddedOrigin;
       const flashStart = Math.max(0, flashAnchor - 1);
       const flashEnd = flashAnchor + 1;
 
@@ -194,9 +243,10 @@ async function main() {
 
       clips.push({
         rank,
-        momentId: m.id,
-        sourceStartSec: m.startSec,
-        sourceEndSec: m.endSec,
+        candidateId: identity.candidateId,
+        momentId: identity.momentId,
+        sourceStartSec,
+        sourceEndSec,
         clipFile: fileName,
         description: m.description || m.hook || `Clip ${rank}`,
         hookText: m.hook || "",
@@ -210,7 +260,7 @@ async function main() {
         initialFlashStart: flashStart,
         initialFlashEnd: flashEnd,
         initialContentStart: contentStart,
-        initialContentEnd: Math.min(contentEnd, (m.endSec - m.startSec) + PAD_SEC * 2),
+        initialContentEnd: contentEnd,
       });
     }
 
@@ -223,6 +273,9 @@ async function main() {
     }
 
     let moments: Array<{
+      id?: string;
+      momentId?: string;
+      candidateId?: string;
       description?: string;
       hookText?: string;
       viralityScore?: number;
@@ -245,12 +298,29 @@ async function main() {
       process.exit(1);
     }
 
+    const momentsByCandidate = new Map(
+      moments.map((moment) => {
+        const identity = canonicalizeMoment(jobId, moment);
+        return [identity.candidateId, { ...moment, ...identity }] as const;
+      }),
+    );
+    const trimByFile = new Map(
+      loadExistingTrimIdentities(streamDir, jobId).map((entry) => [entry.clipFile, entry] as const),
+    );
+    if (trimByFile.size === 0) {
+      throw new Error(
+        "Existing raw clips have no canonical identity map; migrate legacy artifacts in Issue #10 instead of joining by filename rank",
+      );
+    }
+
     clips = clipFiles.map((file) => {
-      const rankMatch = file.match(/^(\d+)-/);
-      const rank = rankMatch ? parseInt(rankMatch[1], 10) : 0;
-      const moment = rank > 0 && rank <= moments.length ? moments[rank - 1] : null;
+      const trim = trimByFile.get(file);
+      if (!trim) throw new Error(`No candidate identity mapping for raw clip ${file}`);
+      const moment = momentsByCandidate.get(trim.candidateId);
       return {
-        rank,
+        rank: trim.rank,
+        candidateId: trim.candidateId,
+        momentId: trim.momentId,
         clipFile: file,
         description: moment?.description || file.replace(/^\d+-/, "").replace(/\.mp4$/, "").replace(/-/g, " "),
         hookText: moment?.hookText || "",
@@ -283,6 +353,7 @@ async function main() {
     channelConfig,
     clips: clips.map((c) => ({
       rank: c.rank,
+      candidateId: c.candidateId,
       momentId: c.momentId,
       sourceStartSec: c.sourceStartSec,
       sourceEndSec: c.sourceEndSec,
@@ -412,6 +483,7 @@ async function main() {
                 totalClips: trimData.length,
                 approved: approved.map((t) => ({
                   rank: t.rank,
+                  candidateId: clips.find((clip) => clip.rank === t.rank)?.candidateId,
                   momentId: clips.find((clip) => clip.rank === t.rank)?.momentId,
                   sourceStartSec: clips.find((clip) => clip.rank === t.rank)?.sourceStartSec,
                   sourceEndSec: clips.find((clip) => clip.rank === t.rank)?.sourceEndSec,
@@ -428,6 +500,8 @@ async function main() {
                 })),
                 rejected: rejected.map((t) => ({
                   rank: t.rank,
+                  candidateId: clips.find((clip) => clip.rank === t.rank)?.candidateId,
+                  momentId: clips.find((clip) => clip.rank === t.rank)?.momentId,
                   clipFile: t.clipFile,
                   reason: "User rejected",
                   comment: t.comment || null,
@@ -562,9 +636,36 @@ async function main() {
 //  Auto-trim path — no browser, uses whisper + audio peaks to finalize every clip
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface AutoMomentInput {
+  id?: string;
+  momentId?: string;
+  candidateId?: string;
+  contentLane?: string;
+  laneScore?: number;
+  rank?: number;
+  startSec?: number;
+  endSec?: number;
+  suggestedStartSec?: number;
+  suggestedEndSec?: number;
+  description?: string;
+  hookText?: string;
+  hook?: string;
+  viralScore?: number;
+  viralityScore?: number;
+  signalOverlap?: number;
+  scores?: { viralityScore?: number; composite?: number };
+  archetype?: string;
+  categories?: string[];
+  flashSec?: number;
+  coldOpenSec?: number;
+  naturalEndSec?: number;
+  visualType?: string;
+}
+
 interface AutoMoment {
   rank: number;
-  momentId?: string;
+  candidateId: string;
+  momentId: string;
   slug: string;
   paddedFile: string;
   streamStartSec: number;
@@ -586,19 +687,13 @@ interface AutoMoment {
   visualType?: string;
 }
 
-interface PickQualityEntry {
-  rank: number;
-  status?: "suggested" | "candidate" | "reserve";
-  setupStartSec?: number;
+interface PickQualityEntry extends GroundedQuality {
   payoffStartSec?: number;
-  flashSec?: number;
-  naturalEndSec?: number;
   contextNeeded?: boolean;
-  arcCompleteness?: number;
   reasonSuggested?: string;
 }
 
-const PAD_SEC = 10;
+const PAD_SEC = 15;
 
 function inferArchetypeFromCategories(categories: string[]): string {
   if (categories.includes("friend-roast") || categories.includes("roast")) return "roast";
@@ -676,34 +771,42 @@ function isFiniteSec(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function loadPickQuality(streamDir: string): Map<number, PickQualityEntry> {
+function loadPickQuality(streamDir: string): Map<string, PickQualityEntry> {
   const qualityPath = join(streamDir, "pick-quality.json");
-  const byRank = new Map<number, PickQualityEntry>();
-  if (!existsSync(qualityPath)) return byRank;
+  if (!existsSync(qualityPath)) throw new Error("pick-quality.json missing; run pick-quality first");
 
-  try {
-    const report = JSON.parse(readFileSync(qualityPath, "utf-8")) as { picks?: PickQualityEntry[] };
-    for (const pick of report.picks ?? []) {
-      if (Number.isInteger(pick.rank)) byRank.set(pick.rank, pick);
-    }
-  } catch (e) {
-    log.warn(`Could not read pick-quality.json: ${(e as Error).message}`);
+  const report = JSON.parse(readFileSync(qualityPath, "utf-8")) as { picks?: PickQualityEntry[] };
+  const byCandidate = new Map<string, PickQualityEntry>();
+  for (const pick of report.picks ?? []) {
+    if (!pick.candidateId) throw new Error("pick-quality entry missing candidateId");
+    if (byCandidate.has(pick.candidateId)) throw new Error(`Duplicate pick-quality ${pick.candidateId}`);
+    byCandidate.set(pick.candidateId, pick);
   }
+  return byCandidate;
+}
 
-  return byRank;
+function isGroundedPick(quality: PickQualityEntry): boolean {
+  return quality.groundingStatus === "GROUNDED" && quality.status !== "reserve";
 }
 
 function applyPickQuality(moment: AutoMoment, quality?: PickQualityEntry): AutoMoment {
-  if (!quality) return moment;
+  if (!quality) throw new Error(`No pick-quality entry for ${moment.candidateId}`);
+  const applied = applyGroundedQuality({
+    candidateId: moment.candidateId,
+    startSec: moment.streamStartSec,
+    endSec: moment.streamEndSec,
+    durationSec: moment.streamEndSec - moment.streamStartSec,
+    flashSec: moment.flashSec,
+  }, quality);
 
   return {
     ...moment,
-    streamStartSec: isFiniteSec(quality.setupStartSec) ? quality.setupStartSec : moment.streamStartSec,
-    streamEndSec: isFiniteSec(quality.naturalEndSec) ? quality.naturalEndSec : moment.streamEndSec,
-    flashSec: isFiniteSec(quality.flashSec) ? quality.flashSec : moment.flashSec,
+    streamStartSec: applied.startSec,
+    streamEndSec: applied.endSec,
+    flashSec: applied.flashSec,
     setupStartSec: quality.setupStartSec,
     payoffStartSec: quality.payoffStartSec,
-    naturalEndSec: quality.naturalEndSec,
+    naturalEndSec: applied.endSec,
     contextNeeded: quality.contextNeeded,
     arcCompleteness: quality.arcCompleteness,
     qualityStatus: quality.status,
@@ -711,39 +814,63 @@ function applyPickQuality(moment: AutoMoment, quality?: PickQualityEntry): AutoM
   };
 }
 
-function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): AutoMoment[] {
+function loadAutoMoments(
+  streamDir: string,
+  manifest: { videoPath: string; jobDir: string },
+): AutoMoment[] {
   const nlmPath = join(streamDir, "notebooklm-moments.json");
   const unifiedPath = join(streamDir, "unified-moments.json");
   const momentsPath = join(streamDir, "moments.json");
-  const qualityByRank = loadPickQuality(streamDir);
+  const qualityByCandidate = loadPickQuality(streamDir);
+  const notebookMoments = existsSync(nlmPath)
+    ? JSON.parse(readFileSync(nlmPath, "utf-8")) as AutoMomentInput[]
+    : [];
+  const unifiedMoments = existsSync(unifiedPath)
+    ? JSON.parse(readFileSync(unifiedPath, "utf-8")) as AutoMomentInput[]
+    : [];
+  const scorerMoments = existsSync(momentsPath)
+    ? JSON.parse(readFileSync(momentsPath, "utf-8")) as AutoMomentInput[]
+    : [];
+  const groundedPromoted = loadValidatedGroundedPromoted<AutoMomentInput>(streamDir);
+  const selectedMoments = chooseCanonicalMomentSource(
+    notebookMoments,
+    unifiedMoments,
+    scorerMoments,
+    groundedPromoted,
+  );
+  const jobId = basename(manifest.jobDir);
+  const groundedMoments = selectedMoments.filter((moment) => {
+    const identity = canonicalizeMoment(jobId, moment);
+    const quality = qualityByCandidate.get(identity.candidateId);
+    if (!quality) throw new Error(`No pick-quality entry for ${identity.candidateId}`);
+    return isGroundedPick(quality);
+  });
+  if (selectedMoments.length > 0 && groundedMoments.length === 0) {
+    throw new Error("No source-grounded picks to trim");
+  }
 
-  if (existsSync(nlmPath)) {
-    const nlm: Array<{
-      id?: string;
-      startSec: number;
-      endSec: number;
-      hook?: string;
-      description?: string;
-      viralScore?: number;
-      archetype?: string;
-      categories?: string[];
-      flashSec?: number;
-      coldOpenSec?: number;
-      naturalEndSec?: number;
-      visualType?: string;
-    }> = JSON.parse(readFileSync(nlmPath, "utf-8"));
+  if (selectedMoments === notebookMoments) {
+    const nlm = groundedMoments;
     if (nlm.length > 0) {
       return nlm.map((m, i) => {
+        const identity = canonicalizeMoment(jobId, m);
         const rank = i + 1;
+        const startSec = m.coldOpenSec ?? m.startSec;
+        const endSec = m.naturalEndSec ?? m.endSec;
+        if (!isFiniteSec(startSec) || !isFiniteSec(endSec) || endSec <= startSec) {
+          throw new Error(`Candidate ${identity.candidateId} has no valid source window`);
+        }
         const slug = slugifyForFile(m.hook || m.description || `clip-${rank}`);
         const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
         const targets = getTrimTargets(archetype);
         return applyPickQuality({
           rank,
+          candidateId: identity.candidateId,
+          momentId: identity.momentId,
           slug,
           paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
-          streamStartSec: m.coldOpenSec ?? m.startSec,
-          streamEndSec: m.naturalEndSec ?? m.endSec,
+          streamStartSec: startSec,
+          streamEndSec: endSec,
           hookText: m.hook || "",
           description: m.description || m.hook || `Clip ${rank}`,
           viralityScore: m.viralScore ?? 0,
@@ -754,37 +881,33 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
           setupStartSec: m.coldOpenSec,
           naturalEndSec: m.naturalEndSec,
           visualType: m.visualType,
-        }, qualityByRank.get(rank));
+        }, qualityByCandidate.get(identity.candidateId));
       });
     }
   }
 
-  if (existsSync(unifiedPath)) {
-    const unified: Array<{
-      id?: string;
-      startSec: number;
-      endSec: number;
-      description?: string;
-      hookText?: string;
-      viralityScore?: number;
-      archetype?: string;
-      categories?: string[];
-      flashSec?: number;
-      coldOpenSec?: number;
-      naturalEndSec?: number;
-    }> = JSON.parse(readFileSync(unifiedPath, "utf-8"));
+  if (selectedMoments === unifiedMoments || selectedMoments === groundedPromoted) {
+    const unified = groundedMoments;
     if (unified.length > 0) {
       return unified.map((m, i) => {
+        const identity = canonicalizeMoment(jobId, m);
         const rank = i + 1;
+        const startSec = m.coldOpenSec ?? m.startSec;
+        const endSec = m.naturalEndSec ?? m.endSec;
+        if (!isFiniteSec(startSec) || !isFiniteSec(endSec) || endSec <= startSec) {
+          throw new Error(`Candidate ${identity.candidateId} has no valid source window`);
+        }
         const slug = slugifyForFile(m.hookText || m.description || `clip-${rank}`);
         const archetype = m.archetype || inferArchetypeFromCategories(m.categories || []);
         const targets = getTrimTargets(archetype);
         return applyPickQuality({
           rank,
+          candidateId: identity.candidateId,
+          momentId: identity.momentId,
           slug,
           paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
-          streamStartSec: m.coldOpenSec ?? m.startSec,
-          streamEndSec: m.naturalEndSec ?? m.endSec,
+          streamStartSec: startSec,
+          streamEndSec: endSec,
           hookText: m.hookText || "",
           description: m.description || `Clip ${rank}`,
           viralityScore: m.viralityScore ?? 0,
@@ -794,31 +917,15 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
           flashSec: m.flashSec,
           setupStartSec: m.coldOpenSec,
           naturalEndSec: m.naturalEndSec,
-        }, qualityByRank.get(rank));
+        }, qualityByCandidate.get(identity.candidateId));
       });
     }
   }
 
-  if (existsSync(momentsPath)) {
-    const scorer: Array<{
-      id?: string;
-      suggestedStartSec?: number;
-      suggestedEndSec?: number;
-      startSec?: number;
-      endSec?: number;
-      description?: string;
-      hookText?: string;
-      hook?: string;
-      signalOverlap?: number;
-      scores?: { viralityScore?: number; composite?: number };
-      archetype?: string;
-      categories?: string[];
-      flashSec?: number;
-      coldOpenSec?: number;
-      naturalEndSec?: number;
-      visualType?: string;
-    }> = JSON.parse(readFileSync(momentsPath, "utf-8"));
+  if (selectedMoments === scorerMoments) {
+    const scorer = groundedMoments;
     return scorer.map((m, i) => {
+      const identity = canonicalizeMoment(jobId, m);
       const rank = i + 1;
       const startSec = m.coldOpenSec ?? m.startSec ?? m.suggestedStartSec ?? 0;
       const endSec = m.naturalEndSec ?? m.endSec ?? m.suggestedEndSec ?? startSec + 30;
@@ -828,6 +935,8 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
       const targets = getTrimTargets(archetype);
       return applyPickQuality({
         rank,
+        candidateId: identity.candidateId,
+        momentId: identity.momentId,
         slug,
         paddedFile: `${String(rank).padStart(2, "0")}-${slug}.mp4`,
         streamStartSec: startSec,
@@ -842,7 +951,7 @@ function loadAutoMoments(streamDir: string, manifest: { videoPath: string }): Au
         setupStartSec: m.coldOpenSec,
         naturalEndSec: m.naturalEndSec,
         visualType: m.visualType,
-      }, qualityByRank.get(rank));
+      }, qualityByCandidate.get(identity.candidateId));
     });
   }
 
@@ -945,7 +1054,8 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
 
   const approved: Array<{
     rank: number;
-    momentId?: string;
+    candidateId: string;
+    momentId: string;
     sourceStartSec: number;
     sourceEndSec: number;
     clipFile: string;
@@ -1027,29 +1137,8 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
       forcedPayoffStartSec: m.payoffStartSec != null ? m.payoffStartSec - paddedStartAbs : undefined,
     });
 
-    // Step 5: keep the result inside the configured target duration.
-    // Preserve the natural end/payoff first; trim excess from setup when the
-    // quality pass expanded the build-up too far for a Short.
-    const totalTarget = m.targetMax + 3;
-    if (result.contentDuration + result.flashDuration > totalTarget) {
-      const maxContent = Math.max(m.targetMin - result.flashDuration, totalTarget - result.flashDuration);
-      result.contentStart = Math.max(0, Math.min(result.contentEnd - 5, result.contentEnd - maxContent));
-      result.contentDuration = result.contentEnd - result.contentStart;
-      const requestedPayoffStart = m.payoffStartSec != null
-        ? m.payoffStartSec - paddedStartAbs
-        : result.segments.payoff.start;
-      const setupEnd = Math.max(result.contentStart, Math.min(result.contentEnd, requestedPayoffStart));
-      result.segments.setup = {
-        start: result.contentStart,
-        end: setupEnd,
-        duration: Math.max(0, setupEnd - result.contentStart),
-      };
-      result.segments.payoff = {
-        start: setupEnd,
-        end: result.contentEnd,
-        duration: Math.max(0, result.contentEnd - setupEnd),
-      };
-    }
+    // Grounded story boundaries are authoritative. Duration targets remain
+    // advisory and must not cut setup/payoff/reaction evidence from the Beat Map.
 
     log.info(
       `[${m.rank}] flash ${result.flashStart.toFixed(2)}s +${result.flashDuration.toFixed(2)}s ` +
@@ -1104,6 +1193,7 @@ async function runAutoTrim(streamId: string, streamDir: string, force: boolean):
 
     approved.push({
       rank: m.rank,
+      candidateId: m.candidateId,
       momentId: m.momentId,
       sourceStartSec: m.streamStartSec,
       sourceEndSec: m.streamEndSec,
@@ -1709,13 +1799,17 @@ function updateDisplay() {
   const clip = DATA.clips[currentIndex];
   const durEl = document.getElementById("clipDuration");
   durEl.textContent = clipDur.toFixed(1) + "s";
-  // Color code: green if in target range, yellow if close, red if way off
-  if (clipDur >= clip.targetMin && clipDur <= clip.targetMax) {
-    durEl.className = "value good";
-  } else if (clipDur >= clip.targetMin - 5 && clipDur <= clip.targetMax + 10) {
-    durEl.className = "value accent";
-  } else {
+  // Red means invalid, not merely long. The archetype target is guidance, so a
+  // clip outside it is amber -- worth a look -- while only the platform bounds
+  // are a failure. See docs/adr/0003-duration-is-editorial-not-a-gate.md.
+  // Bounds duplicated from quality-gates.ts because this is generated browser
+  // code and cannot import from the package.
+  if (clipDur < 10 || clipDur > 180) {
     durEl.className = "value over-budget";
+  } else if (clipDur >= clip.targetMin && clipDur <= clip.targetMax) {
+    durEl.className = "value good";
+  } else {
+    durEl.className = "value accent";
   }
   document.getElementById("shiftTime").textContent = clipDur.toFixed(1) + "s";
   updateSeekbar();
@@ -1947,6 +2041,8 @@ function showSummary() {
     const fsi = flashState[i] || {start:0, end:2};
     const flashDur = Math.max(0, fsi.end - fsi.start);
     const totalDur = dur + flashDur;
+    // Valid per the platform (ADR 0003); the target column stays informational.
+    const isValidDuration = totalDur >= 10 && totalDur <= 180;
     const inRange = totalDur >= c.targetMin && totalDur <= c.targetMax;
     const row = document.createElement("tr");
     row.style.opacity = isRejected ? "0.4" : "1";
@@ -1958,7 +2054,7 @@ function showSummary() {
       '<td class="mono" style="color:#f59e0b">' + fsi.start.toFixed(1) + '-' + fsi.end.toFixed(1) + 's (' + flashDur.toFixed(1) + 's)</td>' +
       '<td class="mono">' + s.startTime.toFixed(2) + 's</td>' +
       '<td class="mono">' + s.endTime.toFixed(2) + 's</td>' +
-      '<td class="mono" style="color:' + (isRejected ? '#666' : inRange ? '#22c55e' : '#ef4444') + '">' + (isRejected ? '\\u2014' : totalDur.toFixed(1) + 's') + '</td>' +
+      '<td class="mono" style="color:' + (isRejected ? '#666' : !isValidDuration ? '#ef4444' : inRange ? '#22c55e' : '#f59e0b') + '">' + (isRejected ? '\\u2014' : totalDur.toFixed(1) + 's') + '</td>' +
       '<td class="mono">' + c.targetMin + '-' + c.targetMax + 's</td>';
     tbody.appendChild(row);
   });

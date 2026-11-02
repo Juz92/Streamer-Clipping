@@ -7,12 +7,13 @@
  *   npx tsx packages/clips/src/orchestrate.ts --stream <id>      # Resume from stream ID
  *   npx tsx packages/clips/src/orchestrate.ts --stream <id> --from analyze  # Resume from step
  *   npx tsx packages/clips/src/orchestrate.ts --top 5            # Render top N clips
+ *   npx tsx packages/clips/src/orchestrate.ts --frame0-offsets 1:84,2:29.5,3:27
  *   npx tsx packages/clips/src/orchestrate.ts --dry-run          # Show plan without executing
  */
 
 import "dotenv/config";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createLogger } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
@@ -23,7 +24,7 @@ export { blocksMissingQaReview, blocksMissingTranscriptReview } from "./quality-
 
 const log = createLogger("orchestrate");
 
-const STEPS = ["discover", "analyze", "notebooklm-review", "pick-quality", "trim", "story-gate", "whisper-captions", "render", "review", "thumbnails", "generate-metadata", "review-package", "upload"] as const;
+const STEPS = ["discover", "analyze", "notebooklm-review", "ground-candidates", "grounded-rank", "pick-quality", "trim", "story-gate", "whisper-captions", "generate-metadata", "render", "review", "thumbnails", "review-package", "upload"] as const;
 type Step = (typeof STEPS)[number];
 
 interface RunRecord {
@@ -50,6 +51,7 @@ interface OrchestrateArgs {
   prepareUploadPackage: boolean;
   allowScorerOnly: boolean;
   allowNoQa: boolean;
+  frame0Offsets?: string;
 }
 
 const runStartedAt = new Date().toISOString();
@@ -104,6 +106,12 @@ function parseArgs(): OrchestrateArgs {
       result.allowScorerOnly = true;
     } else if (args[i] === "--allow-no-qa") {
       result.allowNoQa = true;
+    } else if (args[i] === "--frame0-offsets" && args[i + 1]) {
+      const value = args[++i];
+      if (!/^\d+:\d+(?:\.\d+)?(?:,\d+:\d+(?:\.\d+)?)*$/.test(value)) {
+        throw new Error("--frame0-offsets must use rank:seconds pairs, e.g. 1:84,2:29.5");
+      }
+      result.frame0Offsets = value;
     }
   }
 
@@ -151,7 +159,7 @@ function run(cmd: string, label: string, retries = 2): void {
   }
 }
 
-function writeRunReport(streamId: string | undefined, status: "complete" | "failed", error?: unknown): void {
+function writeRunReport(streamId: string | undefined, status: "complete" | "blocked" | "failed", error?: unknown): void {
   if (!streamId) return;
   const dir = findStreamDir(streamId);
   if (!dir) return;
@@ -204,7 +212,7 @@ function getStartStep(args: OrchestrateArgs): Step {
           return "story-gate";
         }
         if (manifest.phase === "notebooklm-reviewed") {
-          return "pick-quality";
+          return "ground-candidates";
         }
         if (manifest.phase === "analyzed") {
           return "notebooklm-review";
@@ -228,17 +236,42 @@ function shouldRun(startIdx: number, step: Step): boolean {
 function hasTranscriptReviewArtifact(streamId: string): boolean {
   const dir = findStreamDir(streamId);
   if (!dir) return false;
-  for (const file of ["notebooklm-moments.json", "unified-moments.json"]) {
+  const hasNonEmptyArray = (file: string): boolean => {
     const path = join(dir, file);
-    if (!existsSync(path)) continue;
+    if (!existsSync(path)) return false;
     try {
       const parsed = JSON.parse(readFileSync(path, "utf-8"));
-      if (Array.isArray(parsed) && parsed.length > 0) return true;
+      return Array.isArray(parsed) && parsed.length > 0;
     } catch {
-      // Ignore malformed enrichment artifacts; downstream can fall back to scorer moments.
+      return false;
     }
-  }
-  return false;
+  };
+  const hasRankedDerivative = hasNonEmptyArray("notebooklm-moments.json")
+    || hasNonEmptyArray("unified-moments.json");
+  return hasRankedDerivative && hasNonEmptyArray("recall-union.json");
+}
+
+function quarantineReviewArtifacts(streamId: string): void {
+  const dir = findStreamDir(streamId);
+  if (!dir) return;
+  const files = [
+    "notebooklm-moments.json",
+    "unified-moments.json",
+    "recall-candidates.json",
+    "recall-union.json",
+    "visual-proofs.json",
+    "visual-proof-review",
+  ].filter((file) => existsSync(join(dir, file)));
+  if (files.length === 0) return;
+
+  const quarantineDir = join(
+    dir,
+    "stale-review-artifacts",
+    new Date().toISOString().replace(/[:.]/g, "-"),
+  );
+  mkdirSync(quarantineDir, { recursive: true });
+  for (const file of files) renameSync(join(dir, file), join(quarantineDir, file));
+  log.info(`Quarantined ${files.length} stale review artifact(s) after fresh analysis`);
 }
 
 function bypassReason(flag: string, dryRun: boolean): string {
@@ -310,6 +343,7 @@ async function main(): Promise<void> {
       log.info(`[DRY RUN] Would run: ${cmd}`);
     } else {
       run(cmd, "Analyze & detect moments");
+      quarantineReviewArtifacts(streamId);
     }
   }
 
@@ -384,21 +418,44 @@ async function main(): Promise<void> {
     }
   }
 
-  // Shadow-run the autonomous ranker until its 2-VOD Precision@5 gate passes;
-  // after that it promotes only the learned top three.
-  if (shouldRun(startIdx, "notebooklm-review") && streamId) {
-    const rankerCmd = "python scripts/autonomous-ranker.py run";
-    if (args.dryRun) log.info(`[DRY RUN] Would run: ${rankerCmd}`);
-    else {
-      try {
-        run(rankerCmd, "Autonomous signal enrichment and ranking");
-      } catch (e) {
-        warn(`Autonomous ranker stayed in shadow mode: ${(e as Error).message}`);
+  // Step 4: Autonomously review gameplay boundaries, then ground every recall candidate.
+  if (shouldRun(startIdx, "ground-candidates") && streamId) {
+    const prepareCmd = `${tsx} ${base}/prepare-visual-proofs.ts --stream ${streamId}`;
+    const reviewCmd = `${tsx} ${base}/review-visual-boundaries.ts --stream ${streamId}`;
+    const groundCmd = `${tsx} ${base}/ground-candidates.ts --stream ${streamId}`;
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${prepareCmd}`);
+      log.info(`[DRY RUN] Would run: ${reviewCmd}`);
+      log.info(`[DRY RUN] Would run: ${groundCmd}`);
+    } else {
+      run(prepareCmd, "Prepare bounded gameplay review videos");
+      run(reviewCmd, "Autonomous gameplay boundary review");
+      run(groundCmd, "Source-aligned candidate grounding");
+    }
+  }
+
+  // Step 5: Rank only grounded candidates. Shadow/failed taste gates never promote.
+  if (shouldRun(startIdx, "grounded-rank") && streamId) {
+    const rankCmd = `${tsx} ${base}/grounded-rank.ts --stream ${streamId}`;
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${rankCmd}`);
+    } else {
+      run(rankCmd, "Grounded explainable ranking");
+      const currentDir = findStreamDir(streamId);
+      const reportPath = currentDir ? join(currentDir, "grounded-ranking.json") : "";
+      const report = reportPath && existsSync(reportPath)
+        ? JSON.parse(readFileSync(reportPath, "utf-8")) as { gate?: { status?: string }; promoted?: unknown[] }
+        : null;
+      if (report?.gate?.status !== "PASS" || (report.promoted?.length ?? 0) === 0) {
+        const message = `Grounded ranking stopped automation: gate=${report?.gate?.status ?? "MISSING"}, promoted=${report?.promoted?.length ?? 0}.`;
+        warn(message);
+        writeRunReport(streamId, "blocked", message);
+        return;
       }
     }
   }
 
-  // Step 4: Pick-quality pass - normalize setup/payoff and mark suggested clip.
+  // Step 5: Pick-quality pass - consume grounded setup/payoff and mark suggested clip.
   if (shouldRun(startIdx, "pick-quality") && streamId) {
     const qualityCmd = `${tsx} ${base}/pick-quality.ts --stream ${streamId}`;
     if (args.dryRun) {
@@ -463,9 +520,20 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 8: Render (produce 9:16 shorts)
+  // Step 8: Generate upload metadata before render so frame-zero packaging is available.
+  if (shouldRun(startIdx, "generate-metadata") && streamId) {
+    const offsetArg = args.frame0Offsets ? ` --frame0-offsets ${args.frame0Offsets}` : "";
+    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}${offsetArg}`;
+    if (args.dryRun) {
+      log.info(`[DRY RUN] Would run: ${metaCmd}`);
+    } else {
+      run(metaCmd, "Generate render-ready upload metadata");
+    }
+  }
+
+  // Step 9: Render (produce 9:16 shorts)
   if (shouldRun(startIdx, "render") && streamId) {
-    const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --all`;
+    const renderCmd = `${tsx} ${base}/render-fast.ts --stream ${streamId} --direct`;
 
     if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${renderCmd}`);
@@ -519,10 +587,6 @@ async function main(): Promise<void> {
     }
   }
 
-  if (streamId && !args.dryRun && shouldRun(startIdx, "thumbnails")) {
-    run(`${tsx} ${base}/preflight.ts --stream ${streamId} --stage pre-upload${args.warnOnlyGates ? " --warn-only" : ""}`, "Pre-upload QA gate");
-  }
-
   // Step 10: Generate thumbnails (YT + TikTok variants per clip).
   if (shouldRun(startIdx, "thumbnails") && streamId) {
     const thumbsCmd = `${tsx} ${base}/generate-thumbnails.ts --stream ${streamId}`;
@@ -537,24 +601,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // Step 11: Generate AI upload metadata (titles, descriptions, tags, captions)
-  if (shouldRun(startIdx, "generate-metadata") && streamId) {
-    const metaCmd = `${tsx} ${base}/generate-metadata.ts --stream ${streamId}`;
 
-    if (args.dryRun) {
-      log.info(`[DRY RUN] Would run: ${metaCmd}`);
-    } else {
-      try {
-        run(metaCmd, "Generate upload metadata (Claude AI)");
-      } catch (e) {
-        warn(
-          `Metadata generation failed: ${(e as Error).message}. Upload.ts will error if upload-metadata.md is missing.`,
-        );
-      }
-    }
-  }
-
-  // Step 12: Prepare local private review folder.
   if (shouldRun(startIdx, "review-package") && streamId) {
     const packageCmd = `${tsx} ${base}/prepare-review.ts --stream ${streamId}`;
     if (args.dryRun) {
@@ -573,6 +620,7 @@ async function main(): Promise<void> {
     } else if (args.dryRun) {
       log.info(`[DRY RUN] Would run: ${uploadCmd}`);
     } else {
+      run(`${tsx} ${base}/preflight.ts --stream ${streamId} --stage pre-upload${args.warnOnlyGates ? " --warn-only" : ""}`, "Pre-upload QA gate");
       run(uploadCmd, "Generate manual upload packages for YouTube, TikTok, Instagram");
     }
   }

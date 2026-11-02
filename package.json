@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "build": "tsc --build",
+    "test": "tsc --build && tsx --test packages/clips/test/*.test.ts packages/clips/test/*.test.mjs",
     "analytics:weekly": "tsx packages/clips/src/analytics.ts --all --feedback --since 7",
     "analytics:feedback": "tsx packages/clips/src/analytics.ts --all --feedback --since 28",
     "db:generate": "drizzle-kit generate",

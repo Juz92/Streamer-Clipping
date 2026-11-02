@@ -13,7 +13,20 @@ import { createLogger } from "@ltx/shared";
 import { findStreamDir, loadManifest } from "./lib/manifest.js";
 import { hasFirstThreeSecondHook } from "./quality-gates.js";
 import { passesAutomaticDiscoveryFloor } from "./lib/content-lanes.js";
+import {
+  canonicalizeMoment,
+  chooseCanonicalMomentSource,
+  loadValidatedGroundedPromoted,
+  type CandidateIdentity,
+} from "./lib/candidate-contract.js";
+import {
+  loadArcGrounding,
+  passesArcGrounding,
+  type ArcGroundingResult,
+  type BeatMap,
+} from "./lib/arc-grounding.js";
 export { hasFirstThreeSecondHook } from "./quality-gates.js";
+export { chooseCanonicalMomentSource as chooseMomentSource } from "./lib/candidate-contract.js";
 
 const log = createLogger("story-gate");
 
@@ -37,6 +50,8 @@ interface AudioSignalLike {
 
 interface MomentLike {
   id?: string;
+  momentId?: string;
+  candidateId?: string;
   rank?: number;
   startSec?: number;
   endSec?: number;
@@ -64,6 +79,7 @@ interface MomentLike {
   shockReaction?: number;
   chatSync?: number;
   reactionChain?: number;
+  privateSelection?: string;
   rubric?: Record<string, unknown>;
   viralSubScores?: Record<string, unknown>;
   transcriptSignals?: TranscriptSignalLike[];
@@ -77,8 +93,12 @@ interface MomentLike {
   };
 }
 
+type CanonicalMoment = MomentLike & CandidateIdentity;
+
 interface TrimEntry {
   rank: number;
+  candidateId: string;
+  momentId?: string;
   clipFile: string;
   flashDuration?: number;
   contentDuration?: number;
@@ -104,11 +124,14 @@ interface SignalMetrics {
 
 interface GateResult {
   rank: number;
+  candidateId: string;
   momentId: string;
   status: GateStatus;
   score: number;
   reasons: string[];
   recommendedAction: string;
+  groundingStatus: "GROUNDED" | "BLOCKED" | "MISSING";
+  beats?: BeatMap;
   signalMetrics?: SignalMetrics;
 }
 
@@ -127,32 +150,21 @@ function parseArgs(): { streamId?: string; minScore: number; warnOnly: boolean; 
   return out;
 }
 
-export function chooseMomentSource(
-  notebookMoments: MomentLike[],
-  unifiedMoments: MomentLike[],
-  scorerMoments: MomentLike[],
-): MomentLike[] {
-  const hasLaneMetadata = scorerMoments.some((moment) =>
-    typeof moment.contentLane === "string" && typeof moment.laneScore === "number"
-  );
-  if (hasLaneMetadata) return scorerMoments;
-  if (notebookMoments.length > 0) return notebookMoments;
-  if (unifiedMoments.length > 0) return unifiedMoments;
-  return scorerMoments;
-}
-
 function loadMomentArray(path: string): MomentLike[] {
   if (!existsSync(path)) return [];
   const parsed = JSON.parse(readFileSync(path, "utf-8"));
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function loadMoments(streamDir: string): MomentLike[] {
+function loadMoments(streamDir: string, jobId: string): CanonicalMoment[] {
   const notebookMoments = loadMomentArray(join(streamDir, "notebooklm-moments.json"));
   const unifiedMoments = loadMomentArray(join(streamDir, "unified-moments.json"));
   const scorerMoments = loadMomentArray(join(streamDir, "moments.json"));
-  const selected = chooseMomentSource(notebookMoments, unifiedMoments, scorerMoments);
-  if (selected.length > 0) return selected;
+  const groundedPromoted = loadValidatedGroundedPromoted<MomentLike>(streamDir);
+  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments, groundedPromoted);
+  if (selected.length > 0) {
+    return selected.map((moment) => canonicalizeMoment(jobId, moment));
+  }
   throw new Error("No notebooklm-moments.json, unified-moments.json, or moments.json found");
 }
 
@@ -162,11 +174,16 @@ function loadSignalMoments(streamDir: string): MomentLike[] {
   return JSON.parse(readFileSync(path, "utf-8"));
 }
 
-function loadTrimEntries(streamDir: string): TrimEntry[] {
+function loadTrimEntries(streamDir: string, jobId: string): TrimEntry[] {
   const trimPath = join(streamDir, "trim-results.json");
   if (!existsSync(trimPath)) return [];
   const trim = JSON.parse(readFileSync(trimPath, "utf-8")) as { approved?: TrimEntry[] };
-  return trim.approved ?? [];
+  return (trim.approved ?? []).map((entry) => {
+    if (!entry.momentId) {
+      throw new Error(`Trim rank ${entry.rank} has no momentId; rerun trim before Story Gate`);
+    }
+    return { ...entry, ...canonicalizeMoment(jobId, entry) };
+  });
 }
 
 function parseTimecodeSeconds(timecode: string): number | undefined {
@@ -228,6 +245,7 @@ export function hasLaughOutLoudEvidence(moment: MomentLike): boolean {
 
 /** Accept the strongest lane-specific payoff; unclassified legacy artifacts keep the LOL gate. */
 export function hasDiscoveryPayoffEvidence(moment: MomentLike): boolean {
+  if (moment.privateSelection) return true;
   if (moment.contentLane) {
     return passesAutomaticDiscoveryFloor({
       contentLane: moment.contentLane,
@@ -392,18 +410,25 @@ function calculateSignalMetrics(
   };
 }
 
-function scoreMoment(
-  moment: MomentLike,
+export function scoreMoment(
+  moment: CanonicalMoment,
   rank: number,
   trim?: TrimEntry,
   signalMoment?: MomentLike,
+  grounding?: ArcGroundingResult,
 ): GateResult {
   let score = 100;
   const reasons: string[] = [];
   let forceBlock = false;
+  const arcGatePassed = passesArcGrounding(grounding);
+  if (!arcGatePassed) {
+    score -= 100;
+    forceBlock = true;
+    reasons.push(grounding?.missingEvidence.join("; ") || "Missing source-aligned arc grounding");
+  }
   const notes = parseTrimNotes(trim?.notes);
-  const startSec = notes.sourceStart ?? moment.startSec ?? moment.suggestedStartSec;
-  const endSec = notes.sourceEnd ?? moment.endSec ?? moment.suggestedEndSec;
+  const startSec = grounding?.beats.setupStartSec ?? notes.sourceStart ?? moment.startSec ?? moment.suggestedStartSec;
+  const endSec = grounding?.beats.reactionEndSec ?? notes.sourceEnd ?? moment.endSec ?? moment.suggestedEndSec;
   const duration = trim?.totalDuration ?? trim?.contentDuration ?? moment.durationSec ?? (startSec != null && endSec != null ? endSec - startSec : undefined);
   const hook = moment.hook ?? moment.hookText ?? "";
   const desc = moment.description ?? "";
@@ -537,26 +562,21 @@ function scoreMoment(
 
   score = Math.max(0, Math.min(100, Math.round(score)));
 
-  let status: GateStatus = "PASS";
-  let recommendedAction = "Proceed to render";
-  if (forceBlock || score < 40) {
-    status = "BLOCK";
-    recommendedAction = "Do not render/upload; pick a different moment";
-  } else if (score < 55) {
-    status = "REPLACE";
-    recommendedAction = "Prefer alternate candidate unless manually approved";
-  } else if (score < 65) {
-    status = "RECUT";
-    recommendedAction = "Recut for clearer setup/payoff before render";
-  }
+  const status: GateStatus = arcGatePassed ? "PASS" : "BLOCK";
+  const recommendedAction = arcGatePassed
+    ? "Arc Gate passed; defer hook and taste ranking to downstream gates"
+    : "Do not render/upload; source grounding is incomplete";
 
   return {
     rank,
-    momentId: moment.id ?? `moment-${rank}`,
+    candidateId: moment.candidateId,
+    momentId: moment.momentId,
     status,
     score,
     reasons,
     recommendedAction,
+    groundingStatus: grounding?.status ?? "MISSING",
+    beats: grounding?.beats,
     signalMetrics,
   };
 }
@@ -574,13 +594,20 @@ function main(): void {
     process.exit(1);
   }
   const manifest = loadManifest(args.streamId);
-  const moments = loadMoments(streamDir);
+  const jobId = manifest.jobDir.split(/[\\/]/).pop() ?? "unknown-job";
+  const moments = loadMoments(streamDir, jobId);
   const signalMoments = loadSignalMoments(streamDir);
-  const trims = loadTrimEntries(streamDir);
+  const trims = loadTrimEntries(streamDir, jobId);
+  const groundingByCandidate = loadArcGrounding(streamDir);
+  const trimmedCandidates = new Set(trims.map((trim) => trim.candidateId));
+  const hasTrimResults = existsSync(join(streamDir, "trim-results.json"));
 
   const selected = moments
     .map((m, i) => ({ moment: m, rank: i + 1 }))
-    .filter(({ rank }) => !args.clips || args.clips.includes(rank));
+    .filter(({ moment, rank }) =>
+      (!args.clips || args.clips.includes(rank))
+      && (!hasTrimResults || trimmedCandidates.has(moment.candidateId)),
+    );
 
   if (selected.length === 0) {
     log.error("No selected moments to gate");
@@ -590,8 +617,9 @@ function main(): void {
   const results = selected.map(({ moment, rank }) => scoreMoment(
     moment,
     rank,
-    trims.find((t) => t.rank === rank),
+    trims.find((t) => t.candidateId === moment.candidateId),
     findSignalMoment(moment, signalMoments),
+    groundingByCandidate.get(moment.candidateId),
   ));
 
   // Upgrade threshold status when the CLI min score is higher than the built-in tiers.

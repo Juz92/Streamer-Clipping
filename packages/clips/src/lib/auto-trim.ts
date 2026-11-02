@@ -226,7 +226,7 @@ export function snapToSpeakerStart(
   if (turns.length === 0) return null;
   const candidates: number[] = [];
   for (const t of turns) {
-    if (Math.abs(t.start - targetSec) <= maxDriftSec) candidates.push(t.start);
+    if (t.start <= targetSec && Math.abs(t.start - targetSec) <= maxDriftSec) candidates.push(t.start);
   }
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => Math.abs(a - targetSec) - Math.abs(b - targetSec));
@@ -242,7 +242,7 @@ export function snapToSpeakerEnd(
   if (turns.length === 0) return null;
   const candidates: number[] = [];
   for (const t of turns) {
-    if (Math.abs(t.end - targetSec) <= maxDriftSec) candidates.push(t.end);
+    if (t.end >= targetSec && Math.abs(t.end - targetSec) <= maxDriftSec) candidates.push(t.end);
   }
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => Math.abs(a - targetSec) - Math.abs(b - targetSec));

@@ -6,6 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { chooseReviewPacketClips } from "./quality-gates.js";
+import { CONTENT_LANES, VIEWER_REACTIONS } from "./lib/content-lanes.js";
 export { chooseReviewPacketClips } from "./quality-gates.js";
 
 interface CliArgs {
@@ -23,6 +24,8 @@ interface PickQuality {
 
 interface TrimEntry {
   rank: number;
+  candidateId: string;
+  momentId: string;
   clipFile: string;
   totalDuration?: number;
   notes?: string;
@@ -30,6 +33,8 @@ interface TrimEntry {
 
 export interface ReviewClip {
   rank: number;
+  candidateId: string;
+  momentId: string;
   file: string;
   title: string;
   thumb: string | null;
@@ -109,6 +114,12 @@ function escapeHtml(value: string): string {
 }
 
 export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], suggestedRank: number | null): string {
+  for (const clip of clips) {
+    const separator = clip.candidateId.indexOf(":");
+    if (separator <= 0 || clip.candidateId.slice(separator + 1) !== clip.momentId) {
+      throw new Error(`Candidate id ${clip.candidateId} does not match momentId ${clip.momentId}`);
+    }
+  }
   return JSON.stringify(
     {
       streamId,
@@ -117,15 +128,27 @@ export function buildDecisionTemplate(streamId: string, clips: ReviewClip[], sug
       acceptedSuggestedPick: null,
       notes: "",
       labelOptions: {
-        reaction: ["lol", "smiled", "nothing", "context-missing"],
+        status: ["keep", "reject", "reserve"],
+        lane: CONTENT_LANES.filter((lane) => lane !== "reject"),
+        reaction: VIEWER_REACTIONS,
         rejectionReason: ["weak-premise", "no-payoff", "needs-context", "generic-gameplay", "bad-cut", "wrong-lane", "not-funny", "other"],
+        arcIntent: ["single-arc", "compilation"],
+        rightsStatus: ["cleared", "unresolved", "blocked"],
       },
       decisions: clips.map((clip) => ({
         rank: clip.rank,
+        candidateId: clip.candidateId,
+        momentId: clip.momentId,
         file: clip.file,
-        status: "pending",
+        status: "reserve",
+        lane: null,
         reaction: null,
         rejectionReason: null,
+        coldOpenAccepted: null,
+        correctedBeats: null,
+        arcIntent: "single-arc",
+        rightsStatus: "unresolved",
+        publishApproved: false,
         notes: "",
       })),
     },
@@ -246,6 +269,7 @@ async function main(): Promise<void> {
   const reviewDir = join(streamDir, "review");
   const reviewShortsDir = join(reviewDir, "shorts");
   const reviewThumbsDir = join(reviewDir, "thumbnails");
+  const reviewQaDir = join(reviewDir, "qa");
   const warnings: string[] = [];
 
   if (!existsSync(shortsDir)) {
@@ -254,6 +278,7 @@ async function main(): Promise<void> {
 
   ensureDir(reviewShortsDir);
   ensureDir(reviewThumbsDir);
+  ensureDir(reviewQaDir);
 
   const qualityReport = readJson<{ suggestedRank?: number | null; picks?: PickQuality[] }>(join(streamDir, "pick-quality.json"), {});
   const qualityByRank = new Map((qualityReport.picks ?? []).map((pick) => [pick.rank, pick]));
@@ -273,6 +298,10 @@ async function main(): Promise<void> {
   const clips: ReviewClip[] = [];
   for (const file of shortFiles) {
     const rank = rankFromFile(file);
+    const trim = trimByRank.get(rank);
+    if (!trim?.candidateId || !trim.momentId) {
+      throw new Error(`Rendered clip ${rank} has no canonical candidate identity in trim-results.json`);
+    }
     const padded = String(rank).padStart(2, "0");
     copyFileSync(join(shortsDir, file), join(reviewShortsDir, file));
 
@@ -284,11 +313,13 @@ async function main(): Promise<void> {
 
     clips.push({
       rank,
+      candidateId: trim.candidateId,
+      momentId: trim.momentId,
       file,
       title: titles.get(rank) ?? file.replace(/^\d{2}-/, "").replace(/\.mp4$/i, ""),
       thumb: copiedYt ? `thumbnails/${ytThumb}` : null,
       quality: qualityByRank.get(rank),
-      trim: trimByRank.get(rank),
+      trim,
     });
   }
 
@@ -296,6 +327,21 @@ async function main(): Promise<void> {
   copyIfExists(join(streamDir, "upload-metadata.json"), join(reviewDir, "upload-metadata.json"));
   copyIfExists(join(streamDir, "pick-quality.json"), join(reviewDir, "pick-quality.json"));
   copyIfExists(join(streamDir, "trim-results.json"), join(reviewDir, "trim-results.json"));
+
+  let qaEvidenceFiles = 0;
+  for (const file of ["gemini-reviews.json", "preflight-pre-upload.json", "qa-frame0-report.json"]) {
+    if (copyIfExists(join(streamDir, file), join(reviewQaDir, file))) qaEvidenceFiles++;
+  }
+  const expressionEvidenceDir = join(streamDir, "qa-frame0-research");
+  if (existsSync(expressionEvidenceDir)) {
+    for (const file of readdirSync(expressionEvidenceDir)) {
+      if (/\.(?:jpg|jpeg|png|json)$/i.test(file) && /candidate|contact-sheet/i.test(file)) {
+        copyFileSync(join(expressionEvidenceDir, file), join(reviewQaDir, file));
+        qaEvidenceFiles++;
+      }
+    }
+  }
+  if (qaEvidenceFiles === 0) warnings.push("QA/contact-sheet evidence missing");
 
   const explicitSuggestedRank = qualityReport.suggestedRank ?? null;
   const suggestedFromIncludedClip =

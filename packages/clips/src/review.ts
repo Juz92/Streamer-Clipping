@@ -41,6 +41,8 @@ const log = createLogger("review");
 
 interface TrimEntry {
   rank: number;
+  candidateId?: string;
+  momentId?: string;
   clipFile: string;
   flashStart: number;
   flashDuration: number;
@@ -478,7 +480,7 @@ async function replaceWeakClips(
         (c) =>
           c.streamId === trimResults.streamId &&
           c.status === "pending" &&
-          !trimResults.approved.some((a) => a.clipFile.includes(c.momentId)),
+          !trimResults.approved.some((a) => a.candidateId === c.candidateId),
       )
       .sort((a, b) => b.viralScore - a.viralScore);
   } catch {
@@ -619,6 +621,13 @@ async function replaceWeakClips(
     entry.contentEnd = trimResult.contentEnd;
     entry.contentDuration = trimResult.contentDuration;
     entry.totalDuration = trimResult.flashDuration + trimResult.contentDuration;
+    if (alt.candidate) {
+      entry.candidateId = alt.candidate.candidateId;
+      entry.momentId = alt.candidate.momentId;
+    } else {
+      delete entry.candidateId;
+      delete entry.momentId;
+    }
     entry.notes = (entry.notes ? entry.notes + ";" : "") + `replaced:${alt.isPool ? "pool" : "reserve"}`;
 
     replaced.push(rank);

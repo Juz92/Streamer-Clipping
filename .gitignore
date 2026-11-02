@@ -11,7 +11,12 @@ yt-dlp.conf
 .remotion/
 
 # Local/generated artifacts
-.scratch/
+# Scratch is local by default, but the wayfinder map under
+# .scratch/measurable-clip-finder/ is the repo issue tracker and is tracked.
+# Note: the pattern must be ".scratch/*", not ".scratch/", or git will not
+# descend into the directory and the negation below cannot re-include anything.
+.scratch/*
+!.scratch/measurable-clip-finder/
 __pycache__/
 *.py[cod]
 *.pt

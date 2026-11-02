@@ -28,3 +28,12 @@ export { withPipelineRetry } from "./utils/retry.js";
 export { readStdin } from "./utils/stdin.js";
 export { ensureDir, jobAssetDir } from "./utils/files.js";
 export { msToFrames, secondsToFrames, framesToMs } from "./utils/timing.js";
+export { ensureMediaToolsOnPath } from "./utils/media-tools.js";
+
+import { ensureMediaToolsOnPath as addMediaTools } from "./utils/media-tools.js";
+
+// Run on import. Everything downstream shells out to ffmpeg/ffprobe by bare
+// program name, so PATH has to be right before the first child process spawns
+// and there is no single entry point to do it in. Appending only ever adds a
+// fallback, so this cannot change behaviour where ffmpeg already resolves.
+addMediaTools();

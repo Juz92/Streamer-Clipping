@@ -15,6 +15,8 @@ import type { Moment } from "./lib/scorer.js";
 import type { LayoutMode } from "./lib/layout.js";
 import { planMotion, buildZoompanFilter, type MotionPlan } from "./lib/motion.js";
 import { insertEmojis, CAPTION_EMOJI_FONT } from "./lib/caption-emoji.js";
+import { loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
+import { assertApprovedReviewWindows, assertFrame0Package, selectPromotedEntries } from "./quality-gates.js";
 
 const log = createLogger("render-fast");
 
@@ -31,87 +33,23 @@ function markRendered(streamId: string): void {
 // Daily Peanut house style:
 // - talking/setup clips should reframe tightly on the Peanut avatar panel;
 // - gameplay clips should be a clean two-panel stack: avatar panel + reframed gameplay.
-// Older jobs sometimes have zeroed avatar coords in channel-config.json, so keep
-// sane source-space defaults here instead of silently falling back to full-frame crops.
-// Final v8 Daily Peanut layout (2026-07 learnings): source is 1920x1080.
-// Top panel uses a wide left/center source crop, then zooms another ~25% and
-// bottom-aligns so the avatar sits on the join line. Bottom gameplay uses a
-// right-biased 1320x1080 crop to avoid duplicating the Peanut/dog facecam.
-const DAILY_PEANUT_AVATAR_REGION: Region = { x: 0, y: 0, w: 1620, h: 1080 };
-const DAILY_PEANUT_GAMEPLAY_REGION: Region = { x: 408, y: 0, w: 1320, h: 1080 };
-const DAILY_PEANUT_V8_GAMEPLAY_BY_RANK: Record<number, Region> = {
-  1: { x: 276, y: 0, w: 1500, h: 1080 },
-  2: { x: 408, y: 0, w: 1320, h: 1080 },
-  3: { x: 408, y: 0, w: 1320, h: 1080 },
-  4: { x: 252, y: 0, w: 1620, h: 1080 },
-  5: { x: 960, y: 0, w: 960, h: 1080 },
-  6: { x: 408, y: 0, w: 1320, h: 1080 },
-};
-
-interface StreamStyleOverride {
-  avatar?: Region;
-  frame0Avatar?: Region;
-  gameplay?: Region;
-  gameplayByRank?: Record<number, Region>;
-}
-
-// Stream-specific house-style overrides, authored in 1920x1080 source space.
-// gp4sqhiaxNo is a 720p Holdfast stream where the Peanut/avatar sits much
-// smaller and lower/right than job-002. Reusing the job-002 wide-left avatar
-// crop makes it look like the old/generic layout, with Peanut tiny in the top
-// panel. These values map to roughly x120 y300 w520 h370 on 1280x720 source.
-const DAILY_PEANUT_STREAM_STYLE_OVERRIDES: Record<string, StreamStyleOverride> = {
-  gp4sqhiaxNo: {
-    // 1280x720 equivalent: x195 y353 w371 h264. This matches the approved v8
-    // zoom/lift while preserving the shared bottom-aligned top-panel crop.
-    avatar: { x: 292, y: 530, w: 556, h: 396 },
-    frame0Avatar: { x: 330, y: 381, w: 390, h: 693 },
-    // ponytail: exact 675x720 effective crops; leftmost edge per clip that
-    // excludes Peanut. Re-probe only when the stream overlay moves.
-    gameplayByRank: {
-      1: { x: 540, y: 0, w: 1012, h: 1080 },
-      2: { x: 540, y: 0, w: 1012, h: 1080 },
-      3: { x: 600, y: 0, w: 1012, h: 1080 },
-      4: { x: 540, y: 0, w: 1012, h: 1080 },
-      5: { x: 540, y: 0, w: 1012, h: 1080 },
-      6: { x: 480, y: 0, w: 1012, h: 1080 },
-      7: { x: 600, y: 0, w: 1012, h: 1080 },
-      8: { x: 600, y: 0, w: 1012, h: 1080 },
-      9: { x: 600, y: 0, w: 1012, h: 1080 },
-      10: { x: 720, y: 0, w: 1012, h: 1080 },
-    },
-  },
-};
-
 const ENABLE_LEGACY_BODY_HOOK_BANNER = process.env.STREAMER_LEGACY_BODY_HOOK_BANNER === "1";
-
-function isUsableRegion(region: Region | undefined | null): region is Region {
-  return !!region && region.w > 0 && region.h > 0;
-}
-
-function normalizeAvatarRegion(region: Region | undefined | null): Region {
-  return isUsableRegion(region) ? region : DAILY_PEANUT_AVATAR_REGION;
-}
-
-function normalizeGameplayRegion(region: Region | undefined | null): Region {
-  return isUsableRegion(region) ? region : DAILY_PEANUT_GAMEPLAY_REGION;
-}
-
-function defaultAvatarRegion(streamId?: string): Region {
-  return DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId ?? ""]?.avatar ?? DAILY_PEANUT_AVATAR_REGION;
-}
-
-function defaultFrame0AvatarRegion(streamId: string | undefined, fallback: Region): Region {
-  return DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId ?? ""]?.frame0Avatar ?? fallback;
-}
-
-function defaultGameplayRegion(streamId: string | undefined, rank: number): Region {
-  const override = DAILY_PEANUT_STREAM_STYLE_OVERRIDES[streamId ?? ""];
-  return override?.gameplayByRank?.[rank]
-    ?? override?.gameplay
-    ?? DAILY_PEANUT_V8_GAMEPLAY_BY_RANK[rank]
-    ?? DAILY_PEANUT_GAMEPLAY_REGION;
-}
+import {
+  DAILY_PEANUT_AVATAR_REGION,
+  DAILY_PEANUT_GAMEPLAY_REGION,
+  DAILY_PEANUT_V8_GAMEPLAY_BY_RANK,
+  StreamStyleOverride,
+  assertClipStyleCalibrated,
+  assertStreamStyleCalibrated,
+  defaultAvatarRegion,
+  defaultFrame0AvatarRegion,
+  defaultGameplayRegion,
+  hasGameStyleProfiles,
+  isUsableRegion,
+  normalizeAvatarRegion,
+  normalizeGameplayRegion,
+  resolveStyleFor,
+} from "./lib/layout-style.js";
 
 interface RenderFastOptions {
   streamId: string;
@@ -314,56 +252,24 @@ function parseHookTexts(streamDir: string): Map<number, string> {
   return hooks;
 }
 
-/**
- * Parse short, thumbnail-safe frame0 hook copy. Prefer upload-metadata.json
- * items[].frame0Hook, fall back to **Frame0 Hook:** in upload-metadata.md,
- * then finally the regular title hook.
- */
-function parseFrame0Hooks(streamDir: string): Map<number, string> {
-  const hooks = new Map<number, string>();
+interface Frame0MetadataItem {
+  rank?: number;
+  clipNum?: number;
+  frame0Hook?: string;
+  frame0OffsetSec?: number;
+}
+
+function loadFrame0MetadataItems(streamDir: string): Frame0MetadataItem[] {
   const jsonPath = join(streamDir, "upload-metadata.json");
+  if (!existsSync(jsonPath)) throw new Error("upload-metadata.json is required before rendering");
+  const parsed = JSON.parse(readFileSync(jsonPath, "utf-8")) as { items?: Frame0MetadataItem[] };
+  return parsed.items ?? [];
+}
 
-  if (existsSync(jsonPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(jsonPath, "utf-8")) as {
-        items?: Array<{ rank?: number; clipNum?: number; frame0Hook?: string }>;
-      };
-      for (const item of parsed.items ?? []) {
-        const rank = item.rank ?? item.clipNum;
-        const hook = item.frame0Hook?.trim();
-        if (rank && hook) hooks.set(rank, hook.replace(/[^\x20-\x7E]/g, "").trim());
-      }
-    } catch {
-      // Keep falling back to markdown/title hooks.
-    }
-  }
-
-  const mdPath = join(streamDir, "upload-metadata.md");
-  if (existsSync(mdPath)) {
-    const content = readFileSync(mdPath, "utf-8");
-    const sectionRegex = /^## (\d+)\s*--/gm;
-    let match: RegExpExecArray | null;
-    const sectionStarts: Array<{ rank: number; start: number }> = [];
-    while ((match = sectionRegex.exec(content)) !== null) {
-      sectionStarts.push({ rank: parseInt(match[1], 10), start: match.index });
-    }
-
-    for (let i = 0; i < sectionStarts.length; i++) {
-      const start = sectionStarts[i].start;
-      const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].start : content.length;
-      const section = content.slice(start, end);
-      const hookMatch = section.match(/\*\*Frame0 Hook:\*\*\s*(.+)/i);
-      if (hookMatch && !hooks.has(sectionStarts[i].rank)) {
-        hooks.set(sectionStarts[i].rank, hookMatch[1].trim().replace(/[^\x20-\x7E]/g, "").trim());
-      }
-    }
-  }
-
-  parseHookTexts(streamDir).forEach((title, rank) => {
-    if (!hooks.has(rank)) hooks.set(rank, title);
-  });
-
-  return hooks;
+function getFrame0Spec(items: Frame0MetadataItem[], rank: number, duration: number): { hookText: string; offsetSec: number } {
+  assertFrame0Package(items, { [rank]: duration });
+  const item = items.find((candidate) => (candidate.rank ?? candidate.clipNum) === rank)!;
+  return { hookText: item.frame0Hook!.trim(), offsetSec: item.frame0OffsetSec! };
 }
 
 /**
@@ -544,17 +450,23 @@ function buildFrame0HookFilters(hookText: string): string {
   const [line1, line2] = splitHookText(hookText.toUpperCase());
   const filters: string[] = [];
   const font = "C\\:/Windows/Fonts/impact.ttf";
+  const bannerY = 1220;
+  const bannerH = 340;
 
+  // Keep the full hook inside the centered 4:5 crop YouTube may use for
+  // vertical-video thumbnails (roughly y=285..1635 on a 1080x1920 frame).
+  filters.push(`drawbox=y=${bannerY}:w=1080:h=${bannerH}:color=black@0.76:t=fill`);
+  filters.push(`drawbox=y=${bannerY}:w=1080:h=6:color=yellow@0.95:t=fill`);
   if (line2) {
     filters.push(
-      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=82:fontcolor=white:borderw=7:bordercolor=black:x=(w-text_w)/2:y=1518`,
+      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=80:fontcolor=white:borderw=7:bordercolor=black:x=(w-text_w)/2:y=1270`,
     );
     filters.push(
-      `drawtext=text='${escapeDrawtext(line2)}':fontfile='${font}':fontsize=98:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1628`,
+      `drawtext=text='${escapeDrawtext(line2)}':fontfile='${font}':fontsize=100:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1390`,
     );
   } else {
     filters.push(
-      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=92:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1600`,
+      `drawtext=text='${escapeDrawtext(line1)}':fontfile='${font}':fontsize=96:fontcolor=yellow:borderw=8:bordercolor=black:x=(w-text_w)/2:y=1345`,
     );
   }
 
@@ -702,11 +614,17 @@ function renderClipFfmpeg(
     duration: number;
     hookText?: string;
     frame0HookText?: string;
+    frame0OffsetSec?: number;
+    frame0SourcePath?: string;
+    frame0SourceDuration?: number;
     frame0Avatar?: Region;
     motionPlan?: MotionPlan | null;
   },
 ): void {
   const startTime = Date.now();
+  assertFrame0Package([
+    { rank: 1, frame0Hook: options.frame0HookText, frame0OffsetSec: options.frame0OffsetSec },
+  ], { 1: options.frame0SourceDuration ?? options.duration });
   const flashDur = options.flashDuration ?? 2;
 
   const motionFilter = options.motionPlan
@@ -769,16 +687,19 @@ function renderClipFfmpeg(
   }
 
   if (options.frame0HookText) {
+    if (typeof options.frame0OffsetSec !== "number") {
+      throw new Error("Validated frame0OffsetSec is required when rendering a frame-zero hook");
+    }
     const frame0FilterPath = outputPath + ".frame0.fc.txt";
     const frame0Filter =
-      `[1:v]select='eq(n,0)',${buildFrame0AvatarFreeze(options.frame0HookText, options.frame0Avatar)},loop=loop=1:size=1:start=0,trim=duration=0.034,setpts=PTS-STARTPTS[f0];` +
+      `[1:v]select='eq(n,0)',${buildFrame0AvatarFreeze(options.frame0HookText, options.frame0Avatar)},trim=end_frame=1,setpts=PTS-STARTPTS[f0];` +
       `[0:v]trim=start_frame=1,setpts=PTS-STARTPTS[rest];` +
       `[f0][rest]concat=n=2:v=1:a=0[final]`;
     writeFileSync(frame0FilterPath, frame0Filter, "utf-8");
     const frame0Cmd = [
       `ffmpeg`,
       `-i "${bodyOutputPath}"`,
-      `-i "${clipPath}"`,
+      `-ss ${options.frame0OffsetSec.toFixed(3)} -i "${options.frame0SourcePath ?? clipPath}"`,
       `-filter_complex_script "${frame0FilterPath}"`,
       `-map "[final]:v"`,
       `-map "0:a?"`,
@@ -807,13 +728,39 @@ function renderClipFfmpeg(
 
 interface TrimResultEntry {
   rank: number;
+  candidateId?: string;
+  momentId?: string;
   clipFile: string;
+  sourceStartSec?: number;
+  sourceEndSec?: number;
   flashStart: number;
   flashDuration: number;
   contentStart: number;
   contentEnd: number;
   contentDuration: number;
   status: string;
+}
+
+function promotedTrimEntries(streamDir: string, entries: TrimResultEntry[]): TrimResultEntry[] {
+  const promoted = loadValidatedGroundedPromoted<{ candidateId?: string; momentId?: string }>(streamDir);
+  return selectPromotedEntries(entries, promoted.map((candidate) => candidate.candidateId!));
+}
+
+function enforceApprovedReviewWindows(streamDir: string, entries: TrimResultEntry[], rawClipsDir?: string): void {
+  const selectionPath = join(streamDir, "private-abc-selection.json");
+  if (!existsSync(selectionPath)) return;
+  const durations: Record<string, number> = {};
+  if (rawClipsDir) {
+    for (const entry of entries) {
+      const path = join(rawClipsDir, entry.clipFile);
+      if (existsSync(path)) durations[entry.clipFile] = getVideoDuration(path);
+    }
+  }
+  assertApprovedReviewWindows(
+    JSON.parse(readFileSync(selectionPath, "utf-8")),
+    entries,
+    durations,
+  );
 }
 
 interface TrimLayoutState {
@@ -863,6 +810,7 @@ async function renderFromTrimmer(
   }
 
   const rawClipsDir = join(streamDir, "raw-clips");
+  enforceApprovedReviewWindows(streamDir, trimResults.approved);
   const whisperDir = join(streamDir, "whisper-captions");
   const shortsDir = join(streamDir, "shorts");
   const tempDir = join(streamDir, "temp");
@@ -870,20 +818,18 @@ async function renderFromTrimmer(
   ensureDir(tempDir);
 
   // Filter to reviewed clips, optionally further filtered by rank
-  const approvedClips = trimResults.approved
+  const approvedClips = promotedTrimEntries(streamDir, trimResults.approved)
     .filter((c) => c.contentEnd < 9000)
     .filter((c) => !clipFilter || clipFilter.includes(c.rank));
   log.info(`Found ${approvedClips.length} reviewed+approved clips to render`);
 
   // Load hook texts
   const hookTexts = parseHookTexts(streamDir);
-  const frame0Hooks = parseFrame0Hooks(streamDir);
+  const frame0Items = loadFrame0MetadataItems(streamDir);
   if (hookTexts.size > 0) {
     log.info(`Loaded ${hookTexts.size} hook texts from upload-metadata.md`);
   }
-  if (frame0Hooks.size > 0) {
-    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
-  }
+  log.info(`Loaded ${frame0Items.length} frame0 specs from upload metadata`);
 
   const summary: Array<{ file: string; duration: number; layout: string }> = [];
 
@@ -976,15 +922,15 @@ async function renderFromTrimmer(
     // Step 4: Render 9:16 short
     const shortPath = join(shortsDir, clip.clipFile);
     const hookText = hookTexts.get(rank);
-    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
     if (hookText) {
       log.info(`  Hook: "${hookText}"`);
     }
-    if (frame0HookText) {
-      log.info(`  Frame0 hook: "${frame0HookText}"`);
-    }
 
     const assembledDuration = getVideoDuration(assembledPath);
+    const frame0SourceDuration = getVideoDuration(rawClipPath);
+    const frame0Spec = getFrame0Spec(frame0Items, rank, frame0SourceDuration);
+    const frame0HookText = frame0Spec.hookText;
+    log.info(`  Frame0 hook: "${frame0HookText}"`);
     log.info(`  Assembled clip duration: ${assembledDuration.toFixed(2)}s`);
 
     const motionPlan = noMotion
@@ -1011,6 +957,9 @@ async function renderFromTrimmer(
       duration: assembledDuration,
       hookText,
       frame0HookText,
+      frame0OffsetSec: frame0Spec.offsetSec,
+      frame0SourcePath: rawClipPath,
+      frame0SourceDuration,
       frame0Avatar,
       motionPlan,
     });
@@ -1066,22 +1015,35 @@ async function renderDirect(
   }
 
   const rawClipsDir = join(streamDir, "raw-clips");
+  enforceApprovedReviewWindows(streamDir, trimResults.approved, rawClipsDir);
   const whisperDir = join(streamDir, "whisper-captions");
+  const approvedCaptionsDir = join(streamDir, "approved-captions");
   const shortsDir = join(streamDir, "shorts");
   ensureDir(shortsDir);
 
+  let sourceCaptionWords: ReturnType<typeof vttToWordTimestamps> | null = null;
+  if (!noCaptions && streamId) {
+    try {
+      const manifest = loadManifest(streamId);
+      if (manifest.subtitlePath && existsSync(manifest.subtitlePath)) {
+        sourceCaptionWords = vttToWordTimestamps(parseVtt(manifest.subtitlePath));
+        log.info(`Loaded ${sourceCaptionWords.length} full-context VTT words`);
+      }
+    } catch (error) {
+      log.warn(`Could not load source VTT: ${(error as Error).message}`);
+    }
+  }
+
   // Real clips only (contentEnd < 9000), rank <= 24, optionally filtered by rank
-  const clipsToRender = trimResults.approved
+  const clipsToRender = promotedTrimEntries(streamDir, trimResults.approved)
     .filter((c) => c.contentEnd < 9000 && c.rank <= 24)
     .filter((c) => !clipFilter || clipFilter.includes(c.rank));
 
   log.info(`Rendering ${clipsToRender.length} clips directly from raw-clips/`);
 
   const hookTexts = parseHookTexts(streamDir);
-  const frame0Hooks = parseFrame0Hooks(streamDir);
-  if (frame0Hooks.size > 0) {
-    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
-  }
+  const frame0Items = loadFrame0MetadataItems(streamDir);
+  log.info(`Loaded ${frame0Items.length} frame0 specs from upload metadata`);
 
   const summary: Array<{ file: string; duration: number; layout: string }> = [];
 
@@ -1115,30 +1077,50 @@ async function renderDirect(
     const frame0Avatar = scaleRegionForSource(defaultFrame0AvatarRegion(streamId, avatarDefault), sourceDims.width, sourceDims.height);
     log.info(`  Layout: ${mode} (${sourceDims.width}x${sourceDims.height} source)`);
 
-    // Captions start after the frame0/hook beat. The legacy body hook banner is
-    // disabled by default; don't re-enable it for v8 style renders.
-    const HOOK_SECS = 2;
+    // The approved raw clip has no synthetic hook segment. Any remaining flash
+    // comes from trim metadata; frame-zero art replaces one decoded frame only.
+    const HOOK_SECS = remainingFlash;
 
     let assFilePath: string | null = null;
     let contentWords: WhisperWord[] = [];
     {
-      const whisperWords = loadWhisperCaptions(whisperDir, clip.clipFile);
-      if (whisperWords && whisperWords.length > 0) {
-        const flashMs = HOOK_SECS * 1000;
-        contentWords = whisperWords.filter((w) => w.startMs >= flashMs);
-        if (!noCaptions) {
-          if (contentWords.length > 0) {
-            let chunks = generateCaptionChunks(contentWords);
-            if (!noEmojis) chunks = insertEmojis(chunks);
-            assFilePath = join(shortsDir, `karaoke-${padded}.ass`);
-            writeKaraokeAss(chunks, mode, assFilePath, noEmojis ? "Arial" : CAPTION_EMOJI_FONT);
-            log.info(`  Captions: ${contentWords.length} words → ${chunks.length} chunks${noEmojis ? "" : " (emoji pass)"}`);
-          } else {
-            log.warn(`  No caption words after flash portion for clip #${rank}`);
-          }
+      const approvedWords = loadWhisperCaptions(approvedCaptionsDir, clip.clipFile);
+      if (approvedWords && approvedWords.length > 0) {
+        contentWords = approvedWords;
+        log.info(`  Caption source: curated transcript (${contentWords.length} words)`);
+      }
+
+      if (
+        contentWords.length === 0 &&
+        sourceCaptionWords &&
+        typeof clip.sourceStartSec === "number" &&
+        typeof clip.sourceEndSec === "number"
+      ) {
+        contentWords = filterByTimeRange(sourceCaptionWords, clip.sourceStartSec, clip.sourceEndSec);
+        if (contentWords.length > 0) {
+          log.info(`  Caption source: full-context VTT (${contentWords.length} words)`);
         }
-      } else if (!noCaptions) {
-        log.warn(`  No whisper captions for clip #${rank}`);
+      }
+
+      if (contentWords.length === 0) {
+        const whisperWords = loadWhisperCaptions(whisperDir, clip.clipFile);
+        if (whisperWords && whisperWords.length > 0) {
+          const flashMs = HOOK_SECS * 1000;
+          contentWords = whisperWords.filter((w) => w.startMs >= flashMs);
+          log.info(`  Caption source: clip Whisper fallback (${contentWords.length} words)`);
+        }
+      }
+
+      if (!noCaptions) {
+        if (contentWords.length > 0) {
+          let chunks = generateCaptionChunks(contentWords);
+          if (!noEmojis) chunks = insertEmojis(chunks);
+          assFilePath = join(shortsDir, `karaoke-${padded}.ass`);
+          writeKaraokeAss(chunks, mode, assFilePath, noEmojis ? "Arial" : CAPTION_EMOJI_FONT);
+          log.info(`  Captions: ${contentWords.length} words → ${chunks.length} chunks${noEmojis ? "" : " (emoji pass)"}`);
+        } else {
+          log.warn(`  No caption words for clip #${rank}`);
+        }
       }
     }
 
@@ -1146,7 +1128,8 @@ async function renderDirect(
     const clipDuration = getVideoDuration(rawClipPath);
     const shortPath = join(shortsDir, clip.clipFile);
     const hookText = hookTexts.get(rank);
-    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
+    const frame0Spec = getFrame0Spec(frame0Items, rank, clipDuration);
+    const frame0HookText = frame0Spec.hookText;
     if (hookText) log.info(`  Hook: "${hookText}"`);
     if (frame0HookText) log.info(`  Frame0 hook: "${frame0HookText}"`);
 
@@ -1174,6 +1157,7 @@ async function renderDirect(
       duration: clipDuration,
       hookText,
       frame0HookText,
+      frame0OffsetSec: frame0Spec.offsetSec,
       frame0Avatar,
       motionPlan,
     });
@@ -1236,6 +1220,7 @@ async function main(): Promise<void> {
     log.error("--stream <id> is required");
     process.exit(1);
   }
+  assertStreamStyleCalibrated(streamId);
 
   // --direct: render raw clips as-is (already assembled by trimmer finalize)
   if (direct) {
@@ -1402,13 +1387,11 @@ async function main(): Promise<void> {
 
   // Parse upload-metadata.md/json for hook texts
   const hookTexts = parseHookTexts(streamDir);
-  const frame0Hooks = parseFrame0Hooks(streamDir);
+  const frame0Items = loadFrame0MetadataItems(streamDir);
   if (hookTexts.size > 0) {
     log.info(`Loaded ${hookTexts.size} hook texts from upload-metadata.md`);
   }
-  if (frame0Hooks.size > 0) {
-    log.info(`Loaded ${frame0Hooks.size} frame0 hooks from upload metadata`);
-  }
+  log.info(`Loaded ${frame0Items.length} frame0 specs from upload metadata`);
 
   const summary: Array<{
     file: string;
@@ -1528,7 +1511,8 @@ async function main(): Promise<void> {
     // Get hook text: CLI override > upload-metadata > unified-moments.json > none
     const unifiedHook = unifiedEntries?.[idx]?.hookText;
     const hookText = (args["hook-text"] as string) || hookTexts.get(rank) || unifiedHook || undefined;
-    const frame0HookText = frame0Hooks.get(rank) ?? hookText;
+    const frame0Spec = getFrame0Spec(frame0Items, rank, clipDuration);
+    const frame0HookText = frame0Spec.hookText;
     if (hookText) {
       log.info(`  Hook: "${hookText}"`);
     } else {
@@ -1564,6 +1548,7 @@ async function main(): Promise<void> {
       duration: clipDuration,
       hookText,
       frame0HookText,
+      frame0OffsetSec: frame0Spec.offsetSec,
       motionPlan,
     });
 
@@ -1585,6 +1570,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  log.error("Fatal error:", err);
+  log.error(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 });

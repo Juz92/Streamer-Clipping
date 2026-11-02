@@ -7,8 +7,10 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import { fileURLToPath } from "url";
+import { canonicalizeMoment, chooseCanonicalMomentSource, loadValidatedGroundedPromoted } from "./lib/candidate-contract.js";
+import { loadArcGrounding, type ArcGroundingResult } from "./lib/arc-grounding.js";
 
 const log = {
   info: (message: string) => console.log(message),
@@ -32,6 +34,9 @@ interface SetupRef {
 }
 
 export interface SourceMoment {
+  id?: string;
+  momentId?: string;
+  candidateId?: string;
   startSec: number;
   endSec: number;
   durationSec?: number;
@@ -52,15 +57,22 @@ export interface SourceMoment {
 export interface PickQuality {
   rank: number;
   id: string;
-  source: "notebooklm" | "unified";
+  candidateId: string;
+  momentId: string;
+  source: "notebooklm" | "unified" | "grounded";
   status: "suggested" | "candidate" | "reserve";
   setupStartSec: number;
+  premiseClearSec: number;
   buildUpStartSec: number;
+  actionStartSec: number;
   payoffStartSec: number;
+  payoffEndSec: number;
+  reactionEndSec: number;
   flashSec: number;
   naturalEndSec: number;
   arcCompleteness: number;
   contextNeeded: boolean;
+  groundingStatus: "GROUNDED" | "BLOCKED" | "MISSING";
   reasonSuggested: string;
   reasons: string[];
 }
@@ -68,7 +80,7 @@ export interface PickQuality {
 export interface PickQualityReport {
   streamId: string;
   generatedAt: string;
-  source: "notebooklm" | "unified";
+  source: "notebooklm" | "unified" | "grounded";
   suggestedRank: number | null;
   reserveRanks: number[];
   picks: PickQuality[];
@@ -219,11 +231,64 @@ function scoreArc(params: {
   return Math.max(0, Math.min(1, Math.round(score * 100) / 100));
 }
 
+function buildGroundedPickQuality(
+  moment: SourceMoment,
+  rank: number,
+  source: "notebooklm" | "unified" | "grounded",
+  grounding: ArcGroundingResult,
+): PickQuality {
+  const beats = grounding.beats;
+  const fallbackStart = moment.startSec;
+  const fallbackEnd = moment.endSec;
+  const setupStartSec = isFiniteNumber(beats.setupStartSec) ? beats.setupStartSec : fallbackStart;
+  const premiseClearSec = isFiniteNumber(beats.premiseClearSec) ? beats.premiseClearSec : setupStartSec;
+  const actionStartSec = isFiniteNumber(beats.actionStartSec) ? beats.actionStartSec : premiseClearSec;
+  const payoffStartSec = isFiniteNumber(beats.payoffStartSec) ? beats.payoffStartSec : actionStartSec;
+  const payoffEndSec = isFiniteNumber(beats.payoffEndSec) ? beats.payoffEndSec : payoffStartSec;
+  const reactionEndSec = isFiniteNumber(beats.reactionEndSec) ? beats.reactionEndSec : fallbackEnd;
+  const flashSec = isFiniteNumber(beats.flashSec) ? beats.flashSec : payoffStartSec;
+  const grounded = grounding.status === "GROUNDED"
+    && grounding.gates.arcComplete
+    && grounding.gates.contextIndependent
+    && grounding.gates.visualProof !== false;
+  const reasons = grounded
+    ? [`source-grounded by ${grounding.localizer}`]
+    : grounding.missingEvidence.length > 0
+      ? grounding.missingEvidence
+      : ["source grounding blocked"];
+  const status: PickQuality["status"] = grounded ? "candidate" : "reserve";
+
+  return {
+    rank,
+    id: `clip-${String(rank).padStart(2, "0")}`,
+    candidateId: grounding.candidateId,
+    momentId: grounding.momentId,
+    source,
+    status,
+    setupStartSec: roundSec(setupStartSec),
+    premiseClearSec: roundSec(premiseClearSec),
+    buildUpStartSec: roundSec(actionStartSec),
+    actionStartSec: roundSec(actionStartSec),
+    payoffStartSec: roundSec(payoffStartSec),
+    payoffEndSec: roundSec(payoffEndSec),
+    reactionEndSec: roundSec(reactionEndSec),
+    flashSec: roundSec(flashSec),
+    naturalEndSec: roundSec(reactionEndSec),
+    arcCompleteness: grounded ? 1 : 0,
+    contextNeeded: !grounding.gates.contextIndependent,
+    groundingStatus: grounding.status,
+    reasonSuggested: `${grounded ? "Candidate" : "Reserve"}: ${reasons.join("; ")}`,
+    reasons,
+  };
+}
+
 export function buildPickQuality(
   moment: SourceMoment,
   rank: number,
-  source: "notebooklm" | "unified",
+  source: "notebooklm" | "unified" | "grounded",
+  grounding?: ArcGroundingResult,
 ): PickQuality {
+  if (grounding) return buildGroundedPickQuality(moment, rank, source, grounding);
   const rawStartSec = isFiniteNumber(moment.startSec) ? moment.startSec : 0;
   const { endSec, usedNaturalEnd } = normalizeEnd(moment, rawStartSec);
   const { flashSec, usedFlashHint } = normalizeFlash(moment, rawStartSec, endSec);
@@ -262,18 +327,31 @@ export function buildPickQuality(
   const status: PickQuality["status"] =
     contextNeeded || arcCompleteness < 0.65 ? "reserve" : "candidate";
 
+  const momentId = moment.momentId ?? moment.id;
+  const candidateId = moment.candidateId ?? momentId;
+  if (!momentId || !candidateId) {
+    throw new Error(`Pick-quality moment at rank ${rank} is missing canonical identity`);
+  }
+
   return {
     rank,
     id: `clip-${String(rank).padStart(2, "0")}`,
+    candidateId,
+    momentId,
     source,
     status,
     setupStartSec: roundSec(setupStartSec),
+    premiseClearSec: roundSec(setupStartSec),
     buildUpStartSec: roundSec(buildUpStartSec),
+    actionStartSec: roundSec(buildUpStartSec),
     payoffStartSec: roundSec(payoffStartSec),
+    payoffEndSec: roundSec(endSec),
+    reactionEndSec: roundSec(endSec),
     flashSec: roundSec(flashSec),
     naturalEndSec: roundSec(endSec),
     arcCompleteness,
     contextNeeded,
+    groundingStatus: "MISSING",
     reasonSuggested: status === "reserve"
       ? `Reserve: ${reasons.join("; ")}`
       : `Candidate: ${reasons.join("; ")}`,
@@ -283,10 +361,17 @@ export function buildPickQuality(
 
 export function buildPickQualityReport(
   streamId: string,
-  source: "notebooklm" | "unified",
+  source: "notebooklm" | "unified" | "grounded",
   moments: SourceMoment[],
+  groundingByCandidate?: Map<string, ArcGroundingResult>,
 ): PickQualityReport {
-  const picks = moments.map((moment, index) => buildPickQuality(moment, index + 1, source));
+  const picks = moments.map((moment, index) => {
+    const grounding = moment.candidateId ? groundingByCandidate?.get(moment.candidateId) : undefined;
+    if (groundingByCandidate && !grounding) {
+      throw new Error(`No arc grounding for ${moment.candidateId ?? moment.id ?? `rank ${index + 1}`}`);
+    }
+    return buildPickQuality(moment, index + 1, source, grounding);
+  });
   const suggested = [...picks]
     .filter((pick) => pick.status !== "reserve")
     .sort((a, b) => {
@@ -317,59 +402,47 @@ function readNonEmptyMoments(path: string): SourceMoment[] | null {
   return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
 }
 
-function loadSourceMoments(streamDir: string): { source: "notebooklm" | "unified"; moments: SourceMoment[] } {
-  const notebookPath = join(streamDir, "notebooklm-moments.json");
-  const notebookMoments = readNonEmptyMoments(notebookPath);
-  if (notebookMoments) {
-    return {
-      source: "notebooklm",
-      moments: notebookMoments,
-    };
-  }
-
-  const unifiedPath = join(streamDir, "unified-moments.json");
-  const unifiedMoments = readNonEmptyMoments(unifiedPath);
-  if (unifiedMoments) {
-    return {
-      source: "unified",
-      moments: unifiedMoments,
-    };
-  }
-
+function loadSourceMoments(streamDir: string): { source: "notebooklm" | "unified" | "grounded"; moments: SourceMoment[] } {
+  const notebookMoments = readNonEmptyMoments(join(streamDir, "notebooklm-moments.json")) ?? [];
+  const unifiedMoments = readNonEmptyMoments(join(streamDir, "unified-moments.json")) ?? [];
+  const groundedPromoted = loadValidatedGroundedPromoted<SourceMoment>(streamDir);
   const momentsPath = join(streamDir, "moments.json");
-  if (existsSync(momentsPath)) {
-    const scorer = JSON.parse(readFileSync(momentsPath, "utf-8")) as Array<SourceMoment & {
-      suggestedStartSec?: number;
-      suggestedEndSec?: number;
-      suggestedDurationSec?: number;
-      signalOverlap?: number;
-      scores?: { viralityScore?: number; composite?: number };
-    }>;
+  const scorer = existsSync(momentsPath)
+    ? JSON.parse(readFileSync(momentsPath, "utf-8")) as Array<SourceMoment & {
+        suggestedStartSec?: number;
+        suggestedEndSec?: number;
+        suggestedDurationSec?: number;
+        signalOverlap?: number;
+        scores?: { viralityScore?: number; composite?: number };
+      }>
+    : [];
+  const scorerMoments = scorer.map((moment) => {
+    const startSec = isFiniteNumber(moment.startSec) ? moment.startSec : moment.suggestedStartSec;
+    const endSec = isFiniteNumber(moment.endSec) ? moment.endSec : moment.suggestedEndSec;
+    const durationSec = moment.durationSec ?? moment.suggestedDurationSec;
     return {
-      source: "unified",
-      moments: scorer.map((moment) => {
-        const startSec = isFiniteNumber(moment.startSec) ? moment.startSec : moment.suggestedStartSec;
-        const endSec = isFiniteNumber(moment.endSec) ? moment.endSec : moment.suggestedEndSec;
-        const durationSec = moment.durationSec ?? moment.suggestedDurationSec;
-        const viralityScore = moment.viralityScore ?? moment.viralScore ?? moment.scores?.viralityScore ?? moment.scores?.composite ?? moment.signalOverlap;
-        return {
-          ...moment,
-          startSec: isFiniteNumber(startSec) ? startSec : 0,
-          endSec: isFiniteNumber(endSec)
-            ? endSec
-            : isFiniteNumber(startSec) && isFiniteNumber(durationSec)
-              ? startSec + durationSec
-              : isFiniteNumber(startSec)
-                ? startSec + MIN_ARC_DURATION_SEC
-                : MIN_ARC_DURATION_SEC,
-          durationSec,
-          viralityScore,
-        };
-      }),
+      ...moment,
+      startSec: isFiniteNumber(startSec) ? startSec : 0,
+      endSec: isFiniteNumber(endSec)
+        ? endSec
+        : isFiniteNumber(startSec) && isFiniteNumber(durationSec)
+          ? startSec + durationSec
+          : isFiniteNumber(startSec)
+            ? startSec + MIN_ARC_DURATION_SEC
+            : MIN_ARC_DURATION_SEC,
+      durationSec,
+      viralityScore: moment.viralityScore ?? moment.viralScore ?? moment.scores?.viralityScore ?? moment.scores?.composite ?? moment.signalOverlap,
     };
-  }
+  });
 
-  throw new Error(`No notebooklm-moments.json, unified-moments.json, or moments.json in ${streamDir}`);
+  const selected = chooseCanonicalMomentSource(notebookMoments, unifiedMoments, scorerMoments, groundedPromoted);
+  if (selected.length === 0) {
+    throw new Error(`No grounded-ranked-moments.json or legacy source moments in ${streamDir}`);
+  }
+  return {
+    source: selected === groundedPromoted ? "grounded" : selected === notebookMoments ? "notebooklm" : "unified",
+    moments: selected,
+  };
 }
 
 async function main(): Promise<void> {
@@ -383,7 +456,17 @@ async function main(): Promise<void> {
 
   const manifest = loadManifest(args.streamId);
   const { source, moments } = loadSourceMoments(streamDir);
-  const report = buildPickQualityReport(manifest.streamId, source, moments);
+  const jobId = basename(streamDir);
+  const canonicalMoments = moments.map((moment) => ({
+    ...moment,
+    ...canonicalizeMoment(jobId, moment),
+  }));
+  const report = buildPickQualityReport(
+    manifest.streamId,
+    source,
+    canonicalMoments,
+    loadArcGrounding(streamDir),
+  );
   const outPath = join(streamDir, "pick-quality.json");
   writeFileSync(outPath, JSON.stringify(report, null, 2), "utf-8");
 

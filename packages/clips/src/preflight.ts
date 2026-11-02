@@ -7,7 +7,7 @@
  *   npx tsx packages/clips/src/preflight.ts --stream <id> --stage pre-upload
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, isAbsolute } from "path";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
@@ -60,7 +60,7 @@ function parseArgs(): { streamId?: string; stage: Stage; warnOnly: boolean } {
   return out;
 }
 
-function checkFile(name: string, rawPath: string | null | undefined, required: boolean, baseDir?: string): CheckResult {
+export function checkFile(name: string, rawPath: string | null | undefined, required: boolean, baseDir?: string): CheckResult {
   let path = rawPath;
   if (path && baseDir && !isAbsolute(path)) {
     path = join(baseDir, path);
@@ -82,6 +82,25 @@ function checkFile(name: string, rawPath: string | null | undefined, required: b
   const size = statSync(path).size;
   if (size === 0) {
     return { name, severity: required ? "BLOCK" : "WARN", message: `${path} is empty` };
+  }
+  // existsSync and statSync are metadata calls and both succeed on a cloud
+  // placeholder, so they reported 10977.7 MB for a stream.mp4 that nothing on
+  // the machine could open. Only an actual read distinguishes the two.
+  try {
+    const handle = openSync(path, "r");
+    try {
+      readSync(handle, Buffer.alloc(1), 0, 1, 0);
+    } finally {
+      closeSync(handle);
+    }
+  } catch (err) {
+    return {
+      name,
+      severity: required ? "BLOCK" : "WARN",
+      message: `${path} reports ${(size / 1024 / 1024).toFixed(1)} MB but cannot be read `
+        + `(${(err as Error).message}). If it is a cloud placeholder, the sync client must `
+        + "download it before this stage can run.",
+    };
   }
   return { name, severity: "PASS", message: `${path} (${(size / 1024 / 1024).toFixed(1)} MB)` };
 }
@@ -167,7 +186,9 @@ function main(): void {
 
   checks.push(checkFile("manifest.videoPath", manifest.videoPath, true, streamDir));
   checks.push(checkFile("manifest.subtitlePath", manifest.subtitlePath, args.stage !== "analysis", streamDir));
-  checks.push(checkFile("manifest.chatPath", manifest.chatPath, false, streamDir));
+  // Chat is required where it is actually read: the analysis stage runs the
+  // chat-reaction recall route. Elsewhere its absence is only a warning.
+  checks.push(checkFile("manifest.chatPath", manifest.chatPath, args.stage === "analysis", streamDir));
   checks.push(checkFile("manifest.audioLevelsPath", manifest.audioLevelsPath, false, streamDir));
 
   if (["transcript-review", "pre-render", "pre-upload"].includes(args.stage)) {

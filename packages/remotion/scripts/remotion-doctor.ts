@@ -2,6 +2,10 @@ import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { join } from "path";
+import { ensureMediaToolsOnPath } from "@ltx/shared";
+
+// ffmpeg may be installed but unreachable on PATH; add a fallback before probing.
+ensureMediaToolsOnPath();
 
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const REMOTION_ROOT = join(ROOT, "packages", "remotion");

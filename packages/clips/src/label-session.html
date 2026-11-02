@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Label Session</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #fff; --ink: #16150f; --muted: #6b6a60;
+    --line: #dededa; --accent: #b4530a; --ok: #1f6f3f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14140f; --panel: #1d1d17; --ink: #f2f1e8; --muted: #9a998d;
+      --line: #32322a; --accent: #e8903a; --ok: #6ec28c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 20px 16px 72px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+  .meta { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 14px; }
+  video { width: 100%; border-radius: 6px; background: #000; display: block; }
+  .ask { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 8px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .opts button {
+    font: inherit; font-size: 15px; padding: 11px 18px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--ink); min-width: 92px;
+  }
+  .opts button:hover { border-color: var(--accent); }
+  .opts button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .hint { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  .nav { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .nav button {
+    font: inherit; padding: 8px 14px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--ink);
+  }
+  .nav button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  textarea { width: 100%; font: inherit; font-size: 13px; padding: 8px; margin-top: 8px; border-radius: 6px;
+    border: 1px solid var(--line); background: transparent; color: var(--ink); resize: vertical; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .done { color: var(--ok); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Label session</h1>
+    <div class="meta" id="progress"></div>
+  </header>
+
+  <div id="stage"></div>
+
+  <div class="card" id="summary" hidden>
+    <h1 style="font-size:15px">Done</h1>
+    <div id="summaryBody"></div>
+    <div class="nav">
+      <button class="primary" id="save">Save review-decision.json</button>
+      <button id="back">Back to last clip</button>
+    </div>
+    <p class="hint" id="ingestHint"></p>
+  </div>
+</div>
+
+<script id="session-data" type="application/json">__SESSION_JSON__</script>
+<script>
+const DATA = JSON.parse(document.getElementById("session-data").textContent);
+const C = DATA.candidates;
+
+// The only question. Everything else the gate needs was derived at prep time
+// and is emitted with its evidence, so nothing here claims a human judged it.
+const REACTIONS = ["lol", "wow", "smiled", "nothing", "context-missing"];
+
+// The second and only other human field. Term recurrence in the transcript
+// measures how much a stream discusses a topic, not whether a moment is a
+// distinctive bit, so this has no derivable basis unless the categorisation
+// stage independently tagged the candidate reaction-gold. Asked only when it
+// could not be derived.
+const REPETITION = ["distinctive", "tactical-filler", "not-applicable"];
+
+// A reaction already implies the decision, so asking separately is a question
+// for nothing. Anything that landed is a keep; anything that did not is a reject.
+const KEEP = new Set(["lol", "wow", "smiled"]);
+const REJECTION_REASON = { nothing: "not-funny", "context-missing": "needs-context" };
+
+const answers = C.map((c) => ({
+  reaction: null,
+  // Pre-filled where grounding could supply it, so most clips stay one click.
+  repetitionClass: (c.derived && c.derived.values && c.derived.values.repetitionClass) || null,
+  notes: "",
+}));
+const timing = C.map(() => ({ shownAt: null, totalMs: 0 }));
+let at = 0;
+
+const el = (t, a = {}, kids = []) => {
+  const n = document.createElement(t);
+  for (const [k, v] of Object.entries(a)) {
+    if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const kid of kids) n.append(kid);
+  return n;
+};
+
+function bank() {
+  const t = timing[at];
+  if (t.shownAt != null) {
+    t.totalMs += Math.round(performance.now() - t.shownAt);
+    t.shownAt = null;
+  }
+}
+
+/** Move on once both human fields are answered, so it stays click-and-go. */
+function advanceIfComplete() {
+  const a = answers[at];
+  if (a.reaction && a.repetitionClass) { bank(); at++; }
+  render();
+}
+
+function render() {
+  const stage = document.getElementById("stage");
+  const summary = document.getElementById("summary");
+  stage.textContent = "";
+
+  if (at >= C.length) {
+    summary.hidden = false;
+    document.getElementById("progress").textContent = `${C.length} of ${C.length}`;
+    renderSummary();
+    return;
+  }
+  summary.hidden = true;
+
+  const c = C[at];
+  const a = answers[at];
+  const t = timing[at];
+  if (t.shownAt == null) t.shownAt = performance.now();
+
+  document.getElementById("progress").textContent =
+    `${at + 1} of ${C.length} — ${Math.round(c.durationSec)}s`;
+
+  const card = el("div", { class: "card" });
+  card.append(el("video", { src: c.clip, controls: "", preload: "metadata" }));
+  card.append(el("p", { class: "ask", text: "Your reaction" }));
+
+  const row = el("div", { class: "opts" });
+  for (const opt of REACTIONS) {
+    const b = el("button", { type: "button", text: opt });
+    b.setAttribute("aria-pressed", String(a.reaction === opt));
+    b.onclick = () => {
+      a.reaction = a.reaction === opt ? null : opt;
+      advanceIfComplete();
+    };
+    row.append(b);
+  }
+  card.append(row);
+  card.append(el("p", {
+    class: "hint",
+    text: "Gut response, not a prediction. No quota — all of them can be "
+      + "“nothing” if that is the truth.",
+  }));
+
+  // Only shown when grounding could not supply it.
+  if (!(c.derived && c.derived.values && c.derived.values.repetitionClass)) {
+    card.append(el("p", { class: "ask", text: "Distinctive bit, or routine filler?" }));
+    const rep = el("div", { class: "opts" });
+    for (const opt of REPETITION) {
+      const b = el("button", { type: "button", text: opt });
+      b.setAttribute("aria-pressed", String(a.repetitionClass === opt));
+      b.onclick = () => {
+        a.repetitionClass = a.repetitionClass === opt ? null : opt;
+        advanceIfComplete();
+      };
+      rep.append(b);
+    }
+    card.append(rep);
+    card.append(el("p", {
+      class: "hint",
+      text: "distinctive = characteristically him, the reason to clip it. "
+        + "tactical-filler = routine chatter that happens every stream.",
+    }));
+  }
+
+  const det = el("details");
+  det.append(el("summary", { text: "What the clip is, and a note (optional)" }));
+  if (c.description) det.append(el("p", { class: "hint", text: c.description }));
+  const ta = el("textarea", { rows: "2", placeholder: "Only if the reaction button cannot say it" });
+  ta.value = a.notes;
+  ta.oninput = () => { a.notes = ta.value; };
+  det.append(ta);
+  card.append(det);
+
+  const nav = el("div", { class: "nav" });
+  const prev = el("button", { type: "button", text: "Previous" });
+  prev.disabled = at === 0;
+  prev.onclick = () => { bank(); at--; render(); };
+  const skip = el("button", { type: "button", text: at === C.length - 1 ? "Finish" : "Skip" });
+  skip.onclick = () => { bank(); at++; render(); };
+  nav.append(prev, skip);
+  card.append(nav);
+
+  stage.append(card);
+}
+
+function renderSummary() {
+  const body = document.getElementById("summaryBody");
+  body.textContent = "";
+  const answered = answers.filter((a) => a.reaction).length;
+  const kept = answers.filter((a) => a.reaction && KEEP.has(a.reaction)).length;
+  const total = timing.reduce((sum, t) => sum + t.totalMs, 0);
+
+  const tbl = el("table");
+  tbl.append(el("tr", {}, [
+    el("th", { text: "#" }), el("th", { text: "reaction" }), el("th", { text: "seconds" }),
+  ]));
+  C.forEach((c, i) => {
+    tbl.append(el("tr", {}, [
+      el("td", { class: "num", text: c.slot }),
+      el("td", { text: answers[i].reaction || "skipped" }),
+      el("td", { class: "num", text: (timing[i].totalMs / 1000).toFixed(0) }),
+    ]));
+  });
+  body.append(tbl);
+  body.append(el("p", {
+    class: "hint done",
+    text: `${answered} of ${C.length} answered, ${kept} kept, `
+      + `${(total / 60000).toFixed(1)} minutes total `
+      + `(${answered ? (total / 1000 / answered).toFixed(0) : 0}s per clip).`,
+  }));
+  document.getElementById("ingestHint").textContent =
+    `Then: npx tsx packages/clips/src/ingest-review-decision.ts --stream ${DATA.streamId} --decision <downloaded file>`;
+}
+
+document.getElementById("back").onclick = () => { at = C.length - 1; render(); };
+
+document.getElementById("save").onclick = () => {
+  const out = {
+    reviewedAt: new Date().toISOString(),
+    notes: `Reaction-only session. ${C.length} blind-mixed candidates; `
+      + "classification fields derived at prep time, see derivationBasis.",
+    decisions: C.flatMap((c, i) => {
+      const a = answers[i];
+      // Skipped or half-answered clips are absent, never guessed.
+      if (!a.reaction || !a.repetitionClass) return [];
+      const d = c.derived || { values: {}, basis: {} };
+      const keep = KEEP.has(a.reaction);
+      return [{
+        rank: i + 1,
+        candidateId: c.candidateId,
+        momentId: c.momentId,
+        // Human.
+        reaction: a.reaction,
+        repetitionClass: a.repetitionClass,
+        status: keep ? "keep" : "reject",
+        rejectionReason: keep ? null : REJECTION_REASON[a.reaction],
+        notes: a.notes || "",
+        // Derived at prep time from arc grounding; basis travels with them.
+        ...d.values,
+        // Human answer wins over the derived placeholder.
+        repetitionClass: a.repetitionClass,
+        correctedBeats: c.beats ?? null,
+        derivedFields: Object.keys(d.values)
+          .filter((k) => k !== "repetitionClass" || d.values.repetitionClass != null)
+          .sort(),
+        derivationBasis: d.basis,
+        // Prototype bookkeeping, ignored by ingest.
+        _band: c.band,
+        _secondsSpent: Math.round(timing[i].totalMs / 1000),
+      }];
+    }),
+  };
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "review-decision.json";
+  link.click();
+  URL.revokeObjectURL(link.href);
+};
+
+render();
+</script>
+</body>
+</html>

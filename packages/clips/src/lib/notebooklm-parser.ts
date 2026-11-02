@@ -114,7 +114,7 @@ export function parseRecallCandidates(raw: RawQueryResponse): NotebookLMPick[] {
       endSec,
       hook: reason ? `${title}: ${reason}` : title,
       quote: quoteRaw?.trim() || undefined,
-      categories: lane.categories,
+      categories: [...lane.categories],
       setupNeeded: false,
       setupOffsetSec: 0,
       strength: Number.isFinite(strength) ? Math.max(1, Math.min(5, strength)) : 3,
@@ -531,7 +531,7 @@ export function parseEnrichmentQuery(
   // Try batch first, fallback to single.
 
   const batchBlocks = answer.split(
-    /\n(?=\*\*Candidate\s+\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/,
+    /\n(?=\*\*(?:Candidate\s+)?\d+\.\s+\[\d{2}:\d{2}:\d{2}\])/,
   );
 
   for (const block of batchBlocks) {

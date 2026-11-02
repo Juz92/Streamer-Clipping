@@ -1,5 +1,5 @@
-import { execSync } from "child_process";
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync } from "fs";
+import { execFileSync } from "child_process";
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { createLogger } from "@ltx/shared";
 
@@ -27,9 +27,10 @@ const DEFAULT_OPTIONS: TranscribeOptions = {
 
 function checkWhisperAvailable(): boolean {
   try {
-    const result = execSync(
-      'python -c "from faster_whisper import WhisperModel; print(\'ok\')"',
-      { stdio: "pipe", timeout: 10_000 },
+    const result = execFileSync(
+      "python",
+      ["-c", "from faster_whisper import WhisperModel; print('ok')"],
+      { stdio: "pipe", timeout: 30_000 },
     );
     return result.toString().trim() === "ok";
   } catch {
@@ -82,15 +83,12 @@ print(f"Transcribed {len(words)} words")
   writeFileSync(tmpScript, script, "utf-8");
 
   try {
-    execSync(`python "${tmpScript}" "${clipPath}" "${outputPath}"`, {
+    execFileSync("python", [tmpScript, clipPath, outputPath], {
       stdio: "pipe",
       timeout: 120_000,
     });
   } finally {
-    try {
-      const { unlinkSync } = require("fs");
-      if (existsSync(tmpScript)) require("fs").unlinkSync(tmpScript);
-    } catch {}
+    if (existsSync(tmpScript)) unlinkSync(tmpScript);
   }
 
   if (!existsSync(outputPath)) return [];

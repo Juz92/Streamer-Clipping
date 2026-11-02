@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Two suites shell out to these by bare program name: media-tools asserts
+      # ffprobe resolves at all, and visual-proof-review generates its fixture
+      # with ffmpeg. Neither is guaranteed on the runner image.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - run: npm ci
+
+      # npm test runs tsc --build first, which matters: twelve test files import
+      # from ../dist/, so a clean checkout has nothing for them to load until
+      # the workspace is built.
+      - run: npm test

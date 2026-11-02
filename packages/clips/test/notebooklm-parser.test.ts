@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  parseRecallCandidates,
   parseHumorQuery,
   parseRunningBitsQuery,
   parseTimestampToSec,
@@ -30,6 +31,26 @@ test("parseTimestampToSec handles [HH:MM:SS] format", () => {
 test("parseTimestampToSec returns -1 for malformed input", () => {
   assert.equal(parseTimestampToSec("not a timestamp"), -1);
   assert.equal(parseTimestampToSec(""), -1);
+});
+
+test("compact recall candidates do not share mutable lane categories", () => {
+  const raw = {
+    value: {
+      answer: JSON.stringify({
+        windows: [
+          { candidate: { start: "00:01:40", end: "00:02:10", lane: "Peanut Bits", strength: 4, title: "First", reason: "first", quote: "a" } },
+          { candidate: { start: "00:01:50", end: "00:02:20", lane: "Squad Chaos", strength: 4, title: "Overlap", reason: "overlap", quote: "b" } },
+          { candidate: { start: "00:08:20", end: "00:08:50", lane: "Peanut Bits", strength: 4, title: "Later", reason: "later", quote: "c" } },
+        ],
+      }),
+      conversation_id: "test",
+    },
+  };
+
+  const picks = parseRecallCandidates(raw);
+  const merged = dedupePicks(picks);
+  assert.deepEqual(merged[0].categories.sort(), ["character-moment", "friend-roast", "peanut-bits", "squad-chaos"]);
+  assert.deepEqual(merged[1].categories.sort(), ["character-moment", "peanut-bits"]);
 });
 
 test("parseHumorQuery extracts picks from query 1 fixture", () => {
@@ -117,7 +138,7 @@ test("parseEmotionalPeaksQuery extracts emotional moments", () => {
   const picks = parseEmotionalPeaksQuery(SYNTHETIC_EMOTIONAL as any);
   assert.equal(picks.length, 2);
   assert.equal(picks[0].startSec, 5 * 3600 + 40 * 60 + 24);
-  assert.equal(picks[0].categories[0], "emotional-peak");
+  assert.equal(picks[0].categories[0], "rage");
   assert.equal(picks[0].sourceQuery, "emotional-peaks");
 });
 
