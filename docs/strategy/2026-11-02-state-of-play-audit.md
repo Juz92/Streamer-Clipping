@@ -43,6 +43,16 @@ bug, not by a decision.
 **Fix is small:** resume/retry the chat fragment download, assert `chatPath`
 non-null in preflight, and fail the job loudly instead of silently degrading.
 
+**Resolved 2026-11-02, same day** — see
+[ticket 01](../../.scratch/measurable-clip-finder/issues/01-recover-chat-replay.md).
+No resume was needed and it was not a network blip. `discover.ts` capped the
+chat download at `timeout: 120_000` while the video download beside it used
+`timeout: 0`, so `execSync` killed a 12-hour stream's chat at two minutes,
+every time. Removing the cap produced a complete 51.0 MB file: 100% timeline
+coverage, 32,417 parsed messages, 7,714 distinct chatters. A second blocker
+was aborting *all* downloads machine-wide — a stale `%APPDATA%\yt-dlp\config.txt`
+pointing `--cookies` at a path that no longer exists.
+
 **Amended 2026-11-02** — see
 [research/03-crowd-route.md](../../.scratch/measurable-clip-finder/research/03-crowd-route.md).
 Chat and heatmap are not the same kind of problem and should not have been

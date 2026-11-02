@@ -167,7 +167,9 @@ function main(): void {
 
   checks.push(checkFile("manifest.videoPath", manifest.videoPath, true, streamDir));
   checks.push(checkFile("manifest.subtitlePath", manifest.subtitlePath, args.stage !== "analysis", streamDir));
-  checks.push(checkFile("manifest.chatPath", manifest.chatPath, false, streamDir));
+  // Chat is required where it is actually read: the analysis stage runs the
+  // chat-reaction recall route. Elsewhere its absence is only a warning.
+  checks.push(checkFile("manifest.chatPath", manifest.chatPath, args.stage === "analysis", streamDir));
   checks.push(checkFile("manifest.audioLevelsPath", manifest.audioLevelsPath, false, streamDir));
 
   if (["transcript-review", "pre-render", "pre-upload"].includes(args.stage)) {

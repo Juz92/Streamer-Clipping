@@ -1,6 +1,7 @@
 import { execSync } from "child_process";
 import { existsSync, writeFileSync } from "fs";
-import { join } from "path";
+import { join, resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import { createLogger, ensureDir, DATA_DIR } from "@ltx/shared";
 import { getStreamDir, saveManifest } from "./lib/manifest.js";
 import type { StreamManifest } from "./lib/manifest.js";
@@ -10,7 +11,13 @@ import { extractHeatmap, saveHeatmap, loadHeatmap, type HeatPoint } from "./lib/
 const log = createLogger("discover");
 
 const DEFAULT_CHANNEL = "https://www.youtube.com/@TheBurntPeanut";
-const YT_DLP = process.env.YT_DLP_CMD?.trim() || "python -m yt_dlp";
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const YT_DLP_BIN = process.env.YT_DLP_CMD?.trim() || "python -m yt_dlp";
+// yt-dlp reads a user-level config that may point --cookies at a path that no
+// longer exists, and a missing cookies file aborts every invocation. An explicit
+// flag on the command line wins, so pass ours whenever we have one.
+const COOKIES_FILE = process.env.YT_DLP_COOKIES?.trim() || join(PROJECT_ROOT, "cookies.txt");
+const YT_DLP = existsSync(COOKIES_FILE) ? `${YT_DLP_BIN} --cookies "${COOKIES_FILE}"` : YT_DLP_BIN;
 const YT_DLP_FORMAT = process.env.YT_DLP_FORMAT?.trim() || "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/best[height<=1080]";
 
 const args = process.argv.slice(2);
@@ -155,16 +162,23 @@ async function download(): Promise<void> {
   try {
     run(
       `${YT_DLP} --write-sub --sub-lang live_chat --skip-download -o "${chatOutput}" "https://youtube.com/watch?v=${streamId}"`,
-      { timeout: 120_000 },
+      // No timeout. A 12-hour stream's chat replay takes far longer than the
+      // 2 minutes this used to allow, and execSync kills it mid-fragment --
+      // which is exactly how job-006 ended up with a 36 MB .part file.
+      { timeout: 0 },
     );
     if (existsSync(expectedChatPath)) {
       chatPath = expectedChatPath;
       log.info("Live chat downloaded");
     } else {
-      log.warn("Live chat file not found after download");
+      // yt-dlp succeeded and wrote nothing: this VOD has no replay to fetch.
+      log.warn("No live chat replay offered for this VOD");
     }
   } catch (err: any) {
-    log.warn(`Live chat download failed: ${err.message}`);
+    // Chat is a designed recall route, not a nice-to-have. Stopping here beats
+    // spending hours analysing a stream with a quarter of its signal missing.
+    log.error(`Live chat download failed: ${err.message}`);
+    process.exit(1);
   }
 
   // Extract YouTube "most replayed" heatmap

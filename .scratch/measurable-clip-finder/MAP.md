@@ -62,6 +62,13 @@ ticket; `research` on every research ticket.
   and no expiry. The heatmap is dead three ways over and its extractor returns
   null by construction; delete it. Twitch per-game chapters transfer onto the
   YouTube timeline for free.
+- [01 — Recover the chat replay route](issues/01-recover-chat-replay.md):
+  recovered — `job-006` now has 100% chat coverage, 32,417 parsed messages from
+  7,714 distinct chatters. The cause was a 2-minute `execSync` timeout on the
+  chat download where the video download beside it had none; a stale global
+  yt-dlp config pointing `--cookies` at a missing path was separately aborting
+  every download on this machine. Preflight now blocks on missing chat at the
+  analysis stage instead of warning forever.
 
 ## Not yet specified
 
