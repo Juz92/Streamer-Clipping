@@ -38,7 +38,44 @@ because it is the same simulcast-offset arithmetic:
 boundaries. One test exists purely to pin that `gameAtSec` returns null outside
 every segment and that null is a real answer, not something to default away.
 
-### Not done: the renderer still keys on streamId
+### Done: the renderer can key on the game
+
+Attempted on instruction after flagging the calibration risk. The mechanism
+landed; the populated crops did not, and that split is deliberate.
+
+Another inherited claim was already handled: `assertStreamStyleCalibrated`
+**already threw** when a stream had no calibrated crop, so "block rather than
+fall back silently" existed — just keyed on streamId. Point 3 of ticket 11 was
+satisfied before I started.
+
+What changed:
+
+- `DAILY_PEANUT_GAME_STYLE_PROFILES`, keyed by the exact Twitch chapter game
+  name. **Intentionally empty.**
+- `resolveStyleFor(streamId, game)` with a documented key order: a stream
+  override beats a game profile, because it exists precisely to handle a
+  broadcast where the overlay moved and the game's usual crop is wrong.
+- `assertClipStyleCalibrated(streamId, game, rank)` fails naming both keys and
+  says rendering would be guesswork. It distinguishes "this game has no profile"
+  from "the game could not be determined", which are different problems.
+- The stream-level assert now also passes when any game profile exists, leaving
+  per-clip resolution to enforce the rest. With the map empty, today's behaviour
+  is bit-for-bit what it was.
+- All four region resolvers take an optional game.
+
+Extracted into **`lib/layout-style.ts`**, which was not optional: `render-fast.ts`
+runs `main()` at import, so importing anything from it executes the CLI and
+exits. That is why nothing in that 63KB file had ever been exported or tested.
+The move leaves the renderer importing the same names, so the rest of it is
+untouched, and the logic now sits in `lib/` with the other testable code.
+
+7 tests in `packages/clips/test/style-resolution.test.ts`. One asserts
+`hasGameStyleProfiles() === false` and says in a comment that if it ever starts
+failing, someone should check the new profile was calibrated against a real
+frame rather than copied from another stream.
+
+### Still not done
+
 
 `DAILY_PEANUT_STREAM_STYLE_OVERRIDES` in `render-fast.ts` is untouched, and so
 is `lib/config.ts`. I stopped deliberately rather than guessing:
