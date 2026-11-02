@@ -86,6 +86,12 @@ ticket; `research` on every research ticket.
   completed session round-trips to 8 of 8 benchmark-eligible labels. The page
   times each question to measure which judgement stalls. Its interactive flow
   has not been executed yet.
+- [13 — Build the crowd-route harvester](issues/13-build-crowd-route-harvester.md):
+  built and verified — 16 crowd anchors across the full 11.6h of the nuke
+  challenge VOD, where the route had produced zero because nobody had written
+  it. Use `release_timestamp`, never `timestamp` (fifteen hours apart), and
+  yt-dlp's exit code is not evidence about its data. Anchors are left unwired
+  from the union on purpose; that is ticket 07's call and now a one-line change.
 
 ## Not yet specified
 
