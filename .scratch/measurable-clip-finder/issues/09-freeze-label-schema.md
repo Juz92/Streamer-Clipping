@@ -4,6 +4,70 @@ Label: `wayfinder:task`
 Mode: AFK
 Parent: [Map: A measurable clip-finder](../MAP.md)
 Blocked by: —
+Claimed: 2026-11-02, this session
+Closed: 2026-11-02 — see [Resolution](#resolution)
+
+## Resolution
+
+**Most of this ticket was already done, and the part I described was wrong.**
+
+The ticket claimed `ingest-review-decision.ts` "throws on four" of the seven
+eligibility inputs. It throws on **all seven plus `coldOpenAccepted`** — and has
+since before today. I wrote that line from a `head -30` truncated grep and never
+checked the rest of the function. The existing ten labels predate that
+validation; they were not written past it.
+
+So a future labelling session could already not omit a classification field. Two
+real gaps remained, and both are now closed.
+
+### Gap 1 — the version was written and never read
+
+`appendManualFeedback` stamped `version: 2` on every write and read the file back
+as `{ records }`, ignoring the version entirely. A file written under any other
+shape would have been merged in silently, which is exactly how two sessions
+ended up with different schemas.
+
+Now `FEEDBACK_SCHEMA_VERSION` is exported, written, and **checked on read**: an
+existing file at a different version throws and tells you to migrate explicitly
+rather than merging across versions.
+
+### Gap 2 — a label could still be silently uncountable
+
+`validateCorrectedBeats` returns early when beats are absent (`if (!beats)
+return;`), which is correct — ticket 05 decided the pipeline proposes beats and
+the human only confirms, so demanding six hand-typed timestamps per candidate
+would defeat the protocol. But nothing checked that beats were *resolvable*. A
+decision with no `correctedBeats`, on a candidate whose arc grounding has no
+complete beat map either, passed validation and then failed
+`hasCompleteBeatMap` inside the corpus — accepted at write time, uncounted at
+read time, no complaint at either end.
+
+`normalizeReviewRecord` now takes an optional set of candidates whose grounded
+beats are complete, and refuses a decision that neither corrects the beats nor
+can inherit them. `main()` builds that set from `arc-grounding.json`, which
+ingest did not previously read. Callers that cannot see grounding omit the
+argument and behave as before, so existing tests are unaffected.
+
+### `coldOpenAccepted`: kept, and deliberately outside eligibility
+
+It is required at write time but absent from the corpus eligibility check, which
+the ticket flagged as the drift pattern. Keeping it, because it is a real
+editorial judgement and it is the input
+[04 — duration and boundary policy](04-duration-and-boundary-policy.md) needs
+when it decides whether the 2-second flash stays. Wiring it into eligibility
+would retroactively invalidate the five `gp4sqhiaxNo` labels that do carry it,
+for no measurement benefit. Recorded here so the next reader knows it is a
+policy input rather than a forgotten field.
+
+### Tests
+
+`packages/clips/test/label-schema-guard.test.ts` — 12 tests, all passing: one per
+never-collected field, both beat-resolvability branches, out-of-order beats, and
+both schema-version paths.
+
+`npm test` now exists (that was listed as in-scope-if-needed) and the suite is
+**167 tests, 165 passing**. The 2 failures are the worktree artifacts documented
+in the comments above.
 
 ## Question
 

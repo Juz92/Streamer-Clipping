@@ -69,6 +69,17 @@ ticket; `research` on every research ticket.
   yt-dlp config pointing `--cookies` at a missing path was separately aborting
   every download on this machine. Preflight now blocks on missing chat at the
   analysis stage instead of warning forever.
+- [09 — Freeze and enforce the label schema](issues/09-freeze-label-schema.md):
+  the seven-field enforcement was already in place (the ticket was wrong about
+  that). Closed the two real gaps: the schema version is now checked on read,
+  not only written, and a decision whose beats are neither corrected nor
+  inheritable from grounding is refused instead of becoming an uncountable
+  label. `npm test` now exists; 167 tests, 165 passing.
+- [12 — Preflight passes files that cannot be read](issues/12-preflight-trusts-placeholders.md):
+  `checkFile` reads a byte instead of trusting `existsSync` and `statSync`.
+  Verified on the 10.7 GB source, which still carries the placeholder attribute
+  while being readable — so the attribute check this ticket originally proposed
+  would have falsely blocked it.
 
 ## Not yet specified
 

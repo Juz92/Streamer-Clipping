@@ -11,6 +11,29 @@ import {
   type ViewerReaction,
 } from "./lib/content-lanes.js";
 
+/**
+ * Schema version of manual-review-feedback.json.
+ *
+ * The file has always carried a version and nothing ever read it, so a file
+ * written under one shape could be merged into another silently. That is how
+ * two labelling sessions ended up with different schemas -- one with no
+ * correctedBeats or arcIntent at all -- and nobody noticed for four months.
+ */
+export const FEEDBACK_SCHEMA_VERSION = 2;
+
+/** All six beats present and finite, matching the gold corpus's own test. */
+function hasCompleteBeats(beats: CorrectedBeatMap | null | undefined): boolean {
+  if (!beats) return false;
+  return [
+    beats.setupStartSec,
+    beats.premiseClearSec,
+    beats.actionStartSec,
+    beats.payoffStartSec,
+    beats.payoffEndSec,
+    beats.reactionEndSec,
+  ].every((value) => Number.isFinite(value));
+}
+
 interface CliArgs {
   streamId: string;
   decisionPath?: string;
@@ -156,6 +179,13 @@ export function normalizeReviewRecord(
   decision: ReviewDecision,
   quality: PickQuality,
   moments: DiscoveryMomentSummary[] = [],
+  /**
+   * Candidates whose arc grounding already carries a complete Beat Map. When
+   * supplied, a decision that neither corrects the beats nor inherits a
+   * complete set is rejected rather than written as a label the gold corpus
+   * will silently refuse. Omitted by callers that cannot see grounding.
+   */
+  groundedBeatCandidates?: ReadonlySet<string>,
 ): ManualReviewRecord {
   const suggestedRank = quality.suggestedRank ?? null;
   const chosenRank = decision.chosenRank ?? null;
@@ -182,6 +212,17 @@ export function normalizeReviewRecord(
       throw new Error(`Review decision ${candidateId} needs keep, reject, or reserve status`);
     }
     validateCorrectedBeats(item.correctedBeats);
+    if (
+      groundedBeatCandidates
+      && !hasCompleteBeats(item.correctedBeats)
+      && !groundedBeatCandidates.has(candidateId)
+    ) {
+      throw new Error(
+        `Review decision ${candidateId} has no corrected Beat Map and no complete grounded one, `
+        + "so the gold corpus would accept the label and then never count it. "
+        + "Supply correctedBeats, or re-run arc grounding for this candidate.",
+      );
+    }
 
     const moment = momentByCandidate.get(candidateId);
     if (momentByCandidate.size > 0 && !moment) {
@@ -306,14 +347,20 @@ export function appendManualFeedback(
 ): ManualReviewRecord {
   mkdirSync(dirname(path), { recursive: true });
   const existing = existsSync(path)
-    ? readJson<{ records?: ManualReviewRecord[] }>(path)
+    ? readJson<{ version?: number; records?: ManualReviewRecord[] }>(path)
     : { records: [] };
+  if (existing.version != null && existing.version !== FEEDBACK_SCHEMA_VERSION) {
+    throw new Error(
+      `${path} is schema version ${existing.version}; this build writes `
+      + `${FEEDBACK_SCHEMA_VERSION}. Migrate it explicitly rather than merging across versions.`,
+    );
+  }
   const previous = (existing.records ?? []).find((item) => item.streamId === record.streamId);
   const merged = previous ? mergeReviewRecords(previous, record) : record;
   const records = (existing.records ?? []).filter((item) => item.streamId !== record.streamId);
   records.push(merged);
   const tempPath = `${path}.tmp`;
-  writeFileSync(tempPath, JSON.stringify({ version: 2, updatedAt: new Date().toISOString(), records }, null, 2), "utf-8");
+  writeFileSync(tempPath, JSON.stringify({ version: FEEDBACK_SCHEMA_VERSION, updatedAt: new Date().toISOString(), records }, null, 2), "utf-8");
   renameSync(tempPath, path);
   return merged;
 }
@@ -349,11 +396,23 @@ async function main(): Promise<void> {
     ...momentByCandidate.get(item.candidateId),
     ...item,
   }));
+  // Arc grounding is where inherited beats come from, so read it here to reject
+  // a decision that would land in the corpus as benchmark-ineligible.
+  const groundingPath = join(streamDir, "arc-grounding.json");
+  const groundedBeatCandidates = existsSync(groundingPath)
+    ? new Set(
+      (readJson<{ results?: Array<{ candidateId?: string; beats?: CorrectedBeatMap }> }>(groundingPath).results ?? [])
+        .filter((row) => row.candidateId && hasCompleteBeats(row.beats))
+        .map((row) => row.candidateId as string),
+    )
+    : undefined;
+
   const record = normalizeReviewRecord(
     args.streamId,
     decision,
     quality,
     canonicalCandidates.length > 0 ? canonicalCandidates : moments,
+    groundedBeatCandidates,
   );
   const storedRecord = appendManualFeedback(record);
 

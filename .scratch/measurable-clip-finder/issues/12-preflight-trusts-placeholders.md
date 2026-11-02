@@ -4,6 +4,33 @@ Label: `wayfinder:task`
 Mode: AFK
 Parent: [Map: A measurable clip-finder](../MAP.md)
 Blocked by: —
+Claimed: 2026-11-02, this session
+Closed: 2026-11-02 — see [Resolution](#resolution)
+
+## Resolution
+
+`checkFile` now proves readability instead of inferring it. After the existing
+size check it opens the file and reads one byte; on failure it reports the size
+it was told, the underlying error, and that a cloud placeholder must be
+downloaded before the stage can run. Severity still follows `required`, so an
+unreadable optional artifact warns rather than blocking.
+
+`checkFile` is exported so it can be tested directly.
+
+Verified both directions:
+
+- `packages/clips/test/preflight-readability.test.ts` — 5 tests. A path that
+  exists and cannot be read as a file never returns PASS; an unreadable optional
+  path warns; the readable, empty and missing branches still behave.
+- On real data, `preflight --stream DRR2zh3YscM --stage analysis` now reports
+  **PASS on all four paths and 0 warnings**, including the 10.7 GB `stream.mp4`.
+  That is the case worth checking: the file still carries the OneDrive
+  placeholder attribute while being fully readable, so the probe confirms the
+  new check does not false-positive on a hydrated placeholder — which is the
+  mistake the attribute-based approach would have made.
+
+`job-006` is analysis-ready for the first time: video, subtitles, chat and audio
+levels all present and readable.
 
 Found on 2026-11-02 while resolving
 [01 — Recover the chat replay route](01-recover-chat-replay.md).
