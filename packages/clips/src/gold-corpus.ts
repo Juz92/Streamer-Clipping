@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join, relative } from "node:path";
+import { DATA_DIR } from "@ltx/shared";
 import { fileURLToPath } from "node:url";
 import { normalizeContentLane } from "./lib/content-lanes.js";
 import { loadValidatedPrivateSelection } from "./lib/candidate-contract.js";
@@ -51,7 +52,16 @@ export interface GoldCorpusRecord {
   sourceWindow: { startSec: number; endSec: number };
   beatMap: BeatMap | null;
   recallRoutes: string[];
-  labelSource: "manual-review" | "private-selection";
+  /**
+   * Where the label came from. "manual-review+derived" means a human supplied
+   * the reaction but one or more classification fields were computed, and
+   * `derivedFields` names exactly which. Anything measuring taste should treat
+   * a derived classification as weaker evidence than a human one.
+   */
+  labelSource: "manual-review" | "manual-review+derived" | "private-selection";
+  /** Classification fields computed rather than judged, with their basis. */
+  derivedFields?: string[];
+  derivationBasis?: Record<string, string>;
   sourceArtifact: string;
   reviewedAt: string | null;
   mediaPath: string | null;
@@ -103,6 +113,8 @@ interface ManualFeedback {
       primaryEvidenceModality?: GoldCorpusRecord["primaryEvidenceModality"];
       repetitionClass?: GoldCorpusRecord["repetitionClass"];
       arcIntent?: GoldCorpusRecord["arcIntent"];
+      derivedFields?: string[];
+      derivationBasis?: Record<string, string>;
     }>;
   }>;
 }
@@ -293,7 +305,11 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
           sourceWindow: sourceWindow(candidateId, union, grounding, null, beatMap),
           beatMap,
           recallRoutes: union.recallRoutes ?? [],
-          labelSource: "manual-review",
+          labelSource: (decision.derivedFields?.length ?? 0) > 0
+            ? "manual-review+derived"
+            : "manual-review",
+          derivedFields: decision.derivedFields,
+          derivationBasis: decision.derivationBasis,
           sourceArtifact: "manual-review-feedback.json",
           reviewedAt: review.reviewedAt ?? null,
           mediaPath,
@@ -372,7 +388,10 @@ export function buildGoldCorpus(clipsRoot: string): GoldCorpus {
 }
 
 function main(): void {
-  const clipsRoot = join(process.cwd(), "data", "clips");
+  // DATA_DIR rather than process.cwd(): every other module resolves data this
+  // way, and it honours LTX_DATA_DIR, so the corpus can be built from a git
+  // worktree that has no data/ of its own instead of silently finding nothing.
+  const clipsRoot = join(DATA_DIR, "clips");
   const outputPath = join(clipsRoot, "gold-corpus-v1.json");
   const corpus = buildGoldCorpus(clipsRoot);
   writeFileSync(outputPath, `${JSON.stringify(corpus, null, 2)}\n`, "utf-8");
