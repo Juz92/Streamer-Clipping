@@ -143,6 +143,39 @@ looks like an improvement in the failure column. If this is worth fixing, probe
 several candidate locations and fall back, or pass the resolved path in from the
 runner.
 
+### 2026-11-02 (later) — both failures fixed, suite fully green at 191/191
+
+The two failures above are gone. `visual-proof-review.test.ts` now asks node
+where tsx is instead of assembling a path:
+
+```ts
+req.resolve("tsx/cli")   // -> .../node_modules/tsx/dist/cli.mjs
+```
+
+**Correcting the warning in the section above.** It said not to use
+`createRequire(...).resolve(...)` for this. That was the wrong lesson from a
+real failure. The approach is right; my *specifier* was wrong. tsx 4.21.0 has
+an `exports` map in which:
+
+- `tsx/cli` **is** declared and resolves straight to `dist/cli.mjs`;
+- `tsx/dist/cli.mjs` is **not**, and throws `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
+Because I computed it at module scope, that throw took the whole file down and
+silently dropped all 6 of its tests — the count went 150 to 145 while the
+failure column *improved*, which is why it looked like progress. The danger was
+never `createRequire`; it was a deep path into a package with an `exports` map,
+evaluated where a throw is invisible.
+
+A `tsx/package.json` fallback is kept behind the `tsx/cli` attempt, since
+package.json is always exported and its `bin` field names the real entry point.
+A comment on the function says not to collapse it back to a deep path.
+
+Why node's resolution is the only thing that works: the worktree has **no
+`node_modules` directory at all**, so every specifier climbs to the main
+checkout's hoisted copy. A path built from the test file's own location cannot
+do that; `req.resolve` does it for free, and the same code works unchanged in
+either layout.
+
 ### 2026-11-02 — a worktree gotcha that will waste someone's afternoon
 
 `node_modules/@ltx/` does not exist in the worktree. The symlinks live in the

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   buildVisualProofReviewPlan,
@@ -18,7 +19,34 @@ import { ensureMediaToolsOnPath } from "../../shared/src/utils/media-tools.js";
 ensureMediaToolsOnPath();
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+/**
+ * Locate tsx's CLI by asking node, not by assembling a path.
+ *
+ * A git worktree nested under .claude/worktrees/ has no node_modules of its own,
+ * so a path built from repoRoot points at nothing and the spawned process dies
+ * with MODULE_NOT_FOUND. Node's own resolution climbs to the main checkout's
+ * hoisted copy, which is the only thing that works in both layouts.
+ *
+ * "tsx/cli" is a declared export that maps to dist/cli.mjs. A deep path like
+ * "tsx/dist/cli.mjs" is NOT exported and throws ERR_PACKAGE_PATH_NOT_EXPORTED,
+ * so do not "simplify" this back to one. The package.json fallback exists in
+ * case ./cli is ever dropped; package.json is always exported, and its bin
+ * field names the real entry point.
+ */
+function resolveTsxCli(): string {
+  const req = createRequire(import.meta.url);
+  try {
+    return req.resolve("tsx/cli");
+  } catch {
+    const pkgPath = req.resolve("tsx/package.json");
+    const bin = (JSON.parse(readFileSync(pkgPath, "utf-8")) as { bin?: string | Record<string, string> }).bin;
+    const rel = typeof bin === "string" ? bin : bin?.tsx;
+    if (!rel) throw new Error("tsx is installed but declares no bin; cannot locate its CLI");
+    return resolve(dirname(pkgPath), rel);
+  }
+}
+
+const tsxCli = resolveTsxCli();
 
 const candidates = [
   {
