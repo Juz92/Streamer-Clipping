@@ -4,6 +4,63 @@ Label: `wayfinder:grilling`
 Mode: HITL
 Parent: [Map: A measurable clip-finder](../MAP.md)
 Blocked by: —
+Claimed: 2026-11-02, this session
+Closed: 2026-11-02 — see [Resolution](#resolution)
+
+## Resolution
+
+**Decided by me, on Justin's instruction, same caveat as
+[04](04-duration-and-boundary-policy.md): his to overturn.**
+
+### First, this ticket described the code wrongly
+
+It said avatar crops are "hardcoded per game". They are not. There is no
+per-game anything in the code:
+
+- `lib/config.ts` holds a **single** `ChannelConfig` with one `avatarRegion` and
+  one `gameplayRegion` for the entire channel — and `channel-config.json` does
+  not exist on disk, so `loadChannelConfig()` returns null.
+- The crops that actually apply are `DAILY_PEANUT_STREAM_STYLE_OVERRIDES` in
+  `render-fast.ts`, keyed by **streamId**, with per-**rank** gameplay crops
+  nested inside. Three streams have entries: `wKJwi-MMLJQ`, `H-_9Fgs5tIg` and
+  `gp4sqhiaxNo`. All three are from July. A new stream matches nothing.
+- CLAUDE.md's per-game crops for Halo, Apex, CS2 and Rust are documentation
+  that no code reads.
+
+So the question was never "refresh the per-game constants or build a detector".
+It is **what the layout config should be keyed on**, and the answer is now
+cheap because of ticket 03.
+
+### The decision
+
+**Key layout on the game segment, not the stream.**
+
+1. All seven Twitch VODs carry per-game `chapters` with real second boundaries
+   while YouTube's are null, and those transfer onto the YouTube timeline by the
+   same sub-ten-second simulcast offset the crowd route already uses. So a
+   candidate's game is knowable from its timestamp, free, before any frame is
+   examined. The hint rides on the candidate record.
+2. **Per-stream overrides stay, demoted to an escape hatch** for a stream where
+   the overlay genuinely moved mid-broadcast. They stop being the primary key,
+   because keying on the stream guarantees staleness: every entry expires the
+   moment the stream does, which is exactly the state the three July entries are
+   in now.
+3. **An unknown game blocks to manual QC. It never falls back silently.** A
+   wrong avatar crop yields a short with Peanut half out of frame — worse than
+   not rendering, and indistinguishable from success in an automated run. This is
+   the same silent-degrade class as tickets 01 and 12.
+4. **`detectLayoutMode` is retired as a decision source.** CLAUDE.md already
+   records that auto-detection is unreliable and must be overridden by hand per
+   clip. Keep it only as a *proposal* displayed during QC, the way the labelling
+   page shows pipeline proposals for confirmation.
+
+Answering the ticket's own question 4: per-stream variation is real (Apex lobby
+versus in-game need different crops within one game), which is why the key is
+the **game segment** rather than the game — a chapter boundary is a segment, and
+a stream that changes game mid-session gets a new segment and a new crop.
+
+Not implemented. Tracked as
+[15 — Key layout on the game segment](15-key-layout-on-game-segment.md).
 
 Graduated from the map's fog on 2026-11-02, once
 [03 — Is the Twitch crowd route available for current VODs?](03-twitch-crowd-route.md)

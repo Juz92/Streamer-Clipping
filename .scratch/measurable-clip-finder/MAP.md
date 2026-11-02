@@ -92,6 +92,18 @@ ticket; `research` on every research ticket.
   it. Use `release_timestamp`, never `timestamp` (fifteen hours apart), and
   yt-dlp's exit code is not evidence about its data. Anchors are left unwired
   from the union on purpose; that is ticket 07's call and now a one-line change.
+- [04 — What is the duration policy, and does story or duration win?](issues/04-duration-and-boundary-policy.md):
+  duration is editorial, not a validity gate. The render gate now enforces the
+  platform only (10s–180s, was a hard 60s that rejected the project's own 92s
+  short and a 69s 7M-view reference hit). Length belongs to ranking; the setup
+  is never trimmed to hit a target. Recorded as ADR 0003. Decided on Justin's
+  instruction while he was away, and his to overturn.
+- [11 — Where does the per-game layout hint come from?](issues/11-per-game-layout-hint.md):
+  layout keys on the **game segment** from Twitch chapters, not the stream.
+  The ticket had the code wrong — there are no per-game constants, just one
+  channel-wide region and streamId overrides that all expired in July. An
+  unknown game blocks to manual QC rather than cropping wrongly, and
+  `detectLayoutMode` is demoted to a QC proposal. Also decided on instruction.
 
 ## Not yet specified
 

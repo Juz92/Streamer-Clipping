@@ -21,6 +21,23 @@ export function hasFirstThreeSecondHook(params: {
   return (params.flashDuration ?? 0) >= 1 || earlySignal || strongText;
 }
 
+/**
+ * Longest duration YouTube still treats a qualifying vertical upload as a Short.
+ *
+ * This gate answers "is this a valid Short", not "is this well edited". The
+ * previous 60s ceiling conflated the two and was contradicted by every piece of
+ * duration evidence the project holds: the only short it ever rendered is 92s,
+ * one of its six 7M-view reference hits is 69s, 4 of 16 single-arc reference
+ * positives run over 60s, and 3 of the 8 candidates the ranker itself selected
+ * for the first labelling session are 107s, 82s and 77s.
+ *
+ * Editorial length is a ranking concern. See docs/adr/0003-duration-is-editorial-not-a-gate.md.
+ */
+export const MAX_SHORT_DURATION_SEC = 180;
+
+/** Below this there is not enough room for setup, payoff and a reaction tail. */
+export const MIN_SHORT_DURATION_SEC = 10;
+
 export interface RenderedShortProbe {
   file: string;
   width: number;
@@ -33,8 +50,8 @@ export function evaluateRenderedShorts(probes: RenderedShortProbe[]): { bad: num
   const bad = probes.filter((probe) =>
     probe.width !== 1080 ||
     probe.height !== 1920 ||
-    probe.durationSec < 10 ||
-    probe.durationSec > 60 ||
+    probe.durationSec < MIN_SHORT_DURATION_SEC ||
+    probe.durationSec > MAX_SHORT_DURATION_SEC ||
     !probe.hasAudio,
   );
   return {

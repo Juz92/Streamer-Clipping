@@ -4,6 +4,40 @@ Label: `wayfinder:grilling`
 Mode: HITL
 Parent: [Map: A measurable clip-finder](../MAP.md)
 Blocked by: —
+Claimed: 2026-11-02, this session
+Closed: 2026-11-02 — see [Resolution](#resolution)
+
+## Resolution
+
+**Decided by me, on Justin's instruction to resolve this while he was away from
+the machine.** This is a HITL ticket and he can overturn any of it; the evidence
+was one-directional enough that I was willing to call it. Recorded as
+[ADR 0003](../../../docs/adr/0003-duration-is-editorial-not-a-gate.md).
+
+**Duration is an editorial judgement, not a validity gate.**
+
+1. The render gate enforces platform validity only: `MIN_SHORT_DURATION_SEC = 10`
+   and `MAX_SHORT_DURATION_SEC = 180`. Nothing between those is a gate failure.
+   **Implemented** in `quality-gates.ts`, with the test fixture moved from 75s —
+   which now legitimately passes — to 200s so the ceiling is still exercised.
+2. Length belongs to **ranking**, not gating. A 150s candidate that drags should
+   lose on editorial strength, where the cost is visible, rather than vanish.
+3. **Never trim the setup to reach a target.** 19 of 21 reference positives show
+   their premise in the first 0–3 seconds, so the premise is load-bearing and is
+   the worst thing to cut. If a complete arc does not fit, the arc wins and
+   `getTrimTargets` becomes advisory.
+4. The flash cold-open **stays**, and arc scoring must not penalise a source
+   window for a weak natural opening. Hooks are synthesized at edit time;
+   judging source quality by edit quality confuses the two.
+
+Points 2–4 are decided but **not implemented** — `trim.ts` still enforces
+archetype targets and still trims setup-side. That is a substantial change in a
+99 KB module and is tracked as
+[14 — Make trim story-first](14-make-trim-story-first.md) rather than attempted
+next to a one-constant gate change.
+
+The dead end this ticket warned about was avoided: the `trim.ts:728` sweet-spot
+nudge was not re-tuned. It is inside the frame the evidence says is wrong.
 
 ## Question
 

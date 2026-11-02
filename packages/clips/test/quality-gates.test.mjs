@@ -16,7 +16,9 @@ test("render QA blocks missing audio, wrong dimensions, and bad durations", () =
     { file: "01-good.mp4", width: 1080, height: 1920, durationSec: 35, hasAudio: true },
     { file: "02-wide.mp4", width: 1920, height: 1080, durationSec: 35, hasAudio: true },
     { file: "03-silent.mp4", width: 1080, height: 1920, durationSec: 35, hasAudio: false },
-    { file: "04-long.mp4", width: 1080, height: 1920, durationSec: 75, hasAudio: true },
+    // Over the 180s platform ceiling. 75s used to fail here and no longer does:
+    // duration is an editorial judgement, not a validity gate (ADR 0003).
+    { file: "04-long.mp4", width: 1080, height: 1920, durationSec: 200, hasAudio: true },
   ]);
   assert.equal(result.bad, 3);
   assert.match(result.message, /02-wide/);
