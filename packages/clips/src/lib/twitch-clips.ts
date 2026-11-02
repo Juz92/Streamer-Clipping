@@ -159,3 +159,61 @@ export function parseClipDumpJson(stdout: string): TwitchClip[] {
   }
   return clips;
 }
+
+/** A Twitch chapter: the game, with boundaries relative to the Twitch VOD. */
+export interface TwitchChapter {
+  title: string;
+  start_time: number;
+  end_time: number;
+}
+
+/** A game segment placed on the YouTube timeline. */
+export interface GameSegment {
+  game: string;
+  startSec: number;
+  endSec: number;
+}
+
+/**
+ * Place Twitch chapters onto the YouTube timeline.
+ *
+ * Chapter boundaries are relative to the Twitch VOD, so they shift by the gap
+ * between the two broadcasts' start times — the same sub-ten-second simulcast
+ * offset the clip anchors use. YouTube's own `chapters` are null on these
+ * streams, so Twitch is the only source of game segmentation.
+ *
+ * Most streams return a single segment covering the whole broadcast, which is
+ * correct rather than a failure: a night spent on one game is one segment.
+ * Party-game nights segment properly — one measured VOD has five.
+ */
+export function toGameSegments(
+  chapters: TwitchChapter[],
+  twitchReleaseTimestamp: number,
+  youtubeReleaseTimestamp: number,
+  youtubeDurationSec: number,
+): GameSegment[] {
+  const offset = twitchReleaseTimestamp - youtubeReleaseTimestamp;
+  return chapters
+    .filter((c) => typeof c.title === "string" && c.title.trim() !== ""
+      && Number.isFinite(c.start_time) && Number.isFinite(c.end_time)
+      && c.end_time > c.start_time)
+    .map((c) => ({
+      game: c.title.trim(),
+      startSec: Math.max(0, c.start_time + offset),
+      endSec: Math.min(youtubeDurationSec, c.end_time + offset),
+    }))
+    .filter((segment) => segment.endSec > segment.startSec)
+    .sort((a, b) => a.startSec - b.startSec);
+}
+
+/**
+ * Which game was on screen at a given second, or null if nothing covers it.
+ *
+ * Null is a real answer and must not be papered over with a default: rendering
+ * a clip with the wrong avatar crop puts Peanut half out of frame, which is
+ * worse than not rendering and looks identical to success in an automated run.
+ */
+export function gameAtSec(segments: GameSegment[], sec: number): string | null {
+  const hit = segments.find((segment) => sec >= segment.startSec && sec < segment.endSec);
+  return hit ? hit.game : null;
+}

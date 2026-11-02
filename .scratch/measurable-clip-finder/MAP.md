@@ -104,6 +104,12 @@ ticket; `research` on every research ticket.
   channel-wide region and streamId overrides that all expired in July. An
   unknown game blocks to manual QC rather than cropping wrongly, and
   `detectLayoutMode` is demoted to a QC proposal. Also decided on instruction.
+- [14 — Make trim story-first](issues/14-make-trim-story-first.md): already
+  satisfied. No line in `trim.ts` uses a duration target to compute a boundary —
+  boundaries come from the grounded beats via `applyGroundedQuality`, and there
+  is no non-grounded fallback. The reassessment's duration-first criticism was
+  fixed between July and now. One real fix: the review UI was the only place
+  targets were not advisory, painting valid long clips red.
 
 ## Not yet specified
 

@@ -1799,13 +1799,17 @@ function updateDisplay() {
   const clip = DATA.clips[currentIndex];
   const durEl = document.getElementById("clipDuration");
   durEl.textContent = clipDur.toFixed(1) + "s";
-  // Color code: green if in target range, yellow if close, red if way off
-  if (clipDur >= clip.targetMin && clipDur <= clip.targetMax) {
-    durEl.className = "value good";
-  } else if (clipDur >= clip.targetMin - 5 && clipDur <= clip.targetMax + 10) {
-    durEl.className = "value accent";
-  } else {
+  // Red means invalid, not merely long. The archetype target is guidance, so a
+  // clip outside it is amber -- worth a look -- while only the platform bounds
+  // are a failure. See docs/adr/0003-duration-is-editorial-not-a-gate.md.
+  // Bounds duplicated from quality-gates.ts because this is generated browser
+  // code and cannot import from the package.
+  if (clipDur < 10 || clipDur > 180) {
     durEl.className = "value over-budget";
+  } else if (clipDur >= clip.targetMin && clipDur <= clip.targetMax) {
+    durEl.className = "value good";
+  } else {
+    durEl.className = "value accent";
   }
   document.getElementById("shiftTime").textContent = clipDur.toFixed(1) + "s";
   updateSeekbar();
@@ -2037,6 +2041,8 @@ function showSummary() {
     const fsi = flashState[i] || {start:0, end:2};
     const flashDur = Math.max(0, fsi.end - fsi.start);
     const totalDur = dur + flashDur;
+    // Valid per the platform (ADR 0003); the target column stays informational.
+    const isValidDuration = totalDur >= 10 && totalDur <= 180;
     const inRange = totalDur >= c.targetMin && totalDur <= c.targetMax;
     const row = document.createElement("tr");
     row.style.opacity = isRejected ? "0.4" : "1";
@@ -2048,7 +2054,7 @@ function showSummary() {
       '<td class="mono" style="color:#f59e0b">' + fsi.start.toFixed(1) + '-' + fsi.end.toFixed(1) + 's (' + flashDur.toFixed(1) + 's)</td>' +
       '<td class="mono">' + s.startTime.toFixed(2) + 's</td>' +
       '<td class="mono">' + s.endTime.toFixed(2) + 's</td>' +
-      '<td class="mono" style="color:' + (isRejected ? '#666' : inRange ? '#22c55e' : '#ef4444') + '">' + (isRejected ? '\\u2014' : totalDur.toFixed(1) + 's') + '</td>' +
+      '<td class="mono" style="color:' + (isRejected ? '#666' : !isValidDuration ? '#ef4444' : inRange ? '#22c55e' : '#f59e0b') + '">' + (isRejected ? '\\u2014' : totalDur.toFixed(1) + 's') + '</td>' +
       '<td class="mono">' + c.targetMin + '-' + c.targetMax + 's</td>';
     tbody.appendChild(row);
   });
