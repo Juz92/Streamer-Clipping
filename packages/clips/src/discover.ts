@@ -1,9 +1,9 @@
 import { execSync } from "child_process";
 import { existsSync, writeFileSync } from "fs";
-import { join, resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import { createLogger, ensureDir, DATA_DIR } from "@ltx/shared";
 import { getStreamDir, saveManifest } from "./lib/manifest.js";
+import { ytDlpCommand } from "./lib/yt-dlp.js";
 import type { StreamManifest } from "./lib/manifest.js";
 import { extractHeatmap, saveHeatmap, loadHeatmap, type HeatPoint } from "./lib/heatmap-extractor.js";
 
@@ -11,13 +11,7 @@ import { extractHeatmap, saveHeatmap, loadHeatmap, type HeatPoint } from "./lib/
 const log = createLogger("discover");
 
 const DEFAULT_CHANNEL = "https://www.youtube.com/@TheBurntPeanut";
-const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const YT_DLP_BIN = process.env.YT_DLP_CMD?.trim() || "python -m yt_dlp";
-// yt-dlp reads a user-level config that may point --cookies at a path that no
-// longer exists, and a missing cookies file aborts every invocation. An explicit
-// flag on the command line wins, so pass ours whenever we have one.
-const COOKIES_FILE = process.env.YT_DLP_COOKIES?.trim() || join(PROJECT_ROOT, "cookies.txt");
-const YT_DLP = existsSync(COOKIES_FILE) ? `${YT_DLP_BIN} --cookies "${COOKIES_FILE}"` : YT_DLP_BIN;
+const YT_DLP = ytDlpCommand();
 const YT_DLP_FORMAT = process.env.YT_DLP_FORMAT?.trim() || "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/best[height<=1080]";
 
 const args = process.argv.slice(2);
